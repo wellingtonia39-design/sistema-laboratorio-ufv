@@ -18,7 +18,6 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
 # --- MAPEAMENTO (COLUNA EXCEL -> TAG WORD) ---
-# Nota: Removi os espaços extras das chaves para bater com a limpeza automática
 DE_PARA_WORD = {
     "Código UFV": "«Código_UFV»",
     "Data de entrada": "«Data_de_entrada»",
@@ -52,7 +51,7 @@ DE_PARA_WORD = {
     "Observação: Analista de Controle de Qualidade": "«Observação»"
 }
 
-# Campos numéricos para formatar (Vírgula)
+# Campos numéricos
 CAMPOS_NUMERICOS = [
     "Retenção", "Retenção Cromo (Kg/m³)", "Balanço Cromo (%)",
     "Retenção Cobre (Kg/m³)", "Balanço Cobre (%)",
@@ -84,7 +83,7 @@ def carregar_dados(aba_nome):
             ws = sh.worksheet(aba_nome)
             dados = ws.get_all_records()
             df = pd.DataFrame(dados)
-            # LIMPEZA CRÍTICA: Remove espaços extras dos nomes das colunas (ex: "Cliente " -> "Cliente")
+            # Remove espaços extras dos nomes das colunas
             df.columns = df.columns.str.strip()
             return df
         except gspread.exceptions.WorksheetNotFound:
@@ -111,35 +110,36 @@ def salvar_dados(df, aba_nome):
         except Exception as e:
             st.error(f"Erro ao salvar: {e}")
 
-# --- FORMATAÇÃO BRASILEIRA ---
+# --- FORMATAÇÃO BRASILEIRA (DATA E NÚMERO) ---
 def formatar_numero_br(valor):
     try:
         if valor == "" or valor is None: return ""
-        # Se vier como string "6,5", troca pra "6.5" pra virar float
-        if isinstance(valor, str):
-            valor = valor.replace(",", ".")
+        if isinstance(valor, str): valor = valor.replace(",", ".")
         float_val = float(valor)
-        # Formata BR
         return "{:,.2f}".format(float_val).replace(",", "X").replace(".", ",").replace("X", ".")
     except:
         return str(valor)
 
 def formatar_data_br(valor):
     if not valor: return ""
-    valor = str(valor).strip()
+    valor_str = str(valor).strip()
+    
+    # Se vier com hora (Ex: 2025-12-25 10:00:00), corta a hora
+    if " " in valor_str:
+        valor_str = valor_str.split(" ")[0]
+
     # Tenta vários formatos
-    formatos = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"]
+    formatos = ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"]
     for fmt in formatos:
         try:
-            d = datetime.strptime(valor, fmt)
+            d = datetime.strptime(valor_str, fmt)
             return d.strftime("%d/%m/%Y")
         except:
             continue
-    return valor
+    return valor_str # Retorna original se não conseguir
 
-# --- CONVERSOR PDF (Robustez) ---
+# --- CONVERSOR PDF ---
 def verificar_libreoffice():
-    """Verifica se o LibreOffice está instalado no sistema"""
     return shutil.which("libreoffice") is not None
 
 def converter_docx_para_pdf(docx_bytes):
@@ -149,42 +149,42 @@ def converter_docx_para_pdf(docx_bytes):
         
         # Comando para converter
         cmd = ['libreoffice', '--headless', '--convert-to', 'pdf', 'temp_doc.docx', '--outdir', '.']
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40)
         
         if os.path.exists("temp_doc.pdf"):
             with open("temp_doc.pdf", "rb") as f:
                 pdf_bytes = f.read()
-            os.remove("temp_doc.docx")
-            os.remove("temp_doc.pdf")
+            # Limpeza
+            if os.path.exists("temp_doc.docx"): os.remove("temp_doc.docx")
+            if os.path.exists("temp_doc.pdf"): os.remove("temp_doc.pdf")
             return pdf_bytes
         return None
     except Exception as e:
-        st.error(f"Erro PDF: {e}")
         return None
 
-# --- PREENCHIMENTO WORD (Estilo Seguro) ---
+# --- PREENCHIMENTO WORD (Lógica Suave) ---
 def preencher_modelo_word(modelo_upload, dados_linha):
     doc = Document(modelo_upload)
     
-    def substituir_preservando_estilo(paragrafo, de, para):
+    def substituir_texto(paragrafo, de, para):
         if de in paragrafo.text:
-            # Tenta substituir dentro dos 'runs' (pedaços de texto com mesmo estilo)
-            # Isso evita perder negrito/italico
-            substituiu_no_run = False
+            # Tenta substituir no 'run' para manter a fonte
+            substituido = False
             for run in paragrafo.runs:
                 if de in run.text:
                     run.text = run.text.replace(de, str(para))
-                    substituiu_no_run = True
+                    substituido = True
             
-            # Se a tag estava quebrada entre runs (ex: parte normal, parte negrito),
-            # substitui o texto inteiro do parágrafo (pode perder formatação mista, mas preenche)
-            if not substituiu_no_run:
+            # Se não conseguiu no run (tag quebrada), substitui no parágrafo
+            # (Isso pode resetar a fonte, mas garante que o texto apareça)
+            if not substituido:
                 paragrafo.text = paragrafo.text.replace(de, str(para))
 
-    # Prepara os dados formatados
+    # Prepara dados
     dados_formatados = {}
     for col, tag in DE_PARA_WORD.items():
         valor = dados_linha.get(col, "")
+        
         if col in CAMPOS_NUMERICOS:
             dados_formatados[tag] = formatar_numero_br(valor)
         elif col in CAMPOS_DATA:
@@ -192,15 +192,16 @@ def preencher_modelo_word(modelo_upload, dados_linha):
         else:
             dados_formatados[tag] = str(valor)
 
-    # Aplica no documento
+    # Aplica
     for tag, valor in dados_formatados.items():
+        if valor is None: valor = "" # Segurança
         for p in doc.paragraphs:
-            substituir_preservando_estilo(p, tag, valor)
+            substituir_texto(p, tag, valor)
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        substituir_preservando_estilo(p, tag, valor)
+                        substituir_texto(p, tag, valor)
     
     bio = io.BytesIO()
     doc.save(bio)
@@ -215,10 +216,8 @@ st.sidebar.divider()
 st.sidebar.markdown("### 📄 Modelo de Relatório")
 arquivo_modelo = st.sidebar.file_uploader("Carregar .docx", type=["docx"])
 
-# Verifica LibreOffice para aviso visual
+# Diagnóstico
 tem_pdf = verificar_libreoffice()
-if not tem_pdf:
-    st.sidebar.warning("⚠️ Aviso: Conversor PDF não detectado. Adicione 'libreoffice' ao packages.txt e reinicie o app.")
 
 if menu == "🪵 Madeira Tratada":
     st.header("Análise de Madeira Tratada")
@@ -228,61 +227,54 @@ if menu == "🪵 Madeira Tratada":
         if "Selecionar" not in df_madeira.columns:
             df_madeira.insert(0, "Selecionar", False)
 
-        st.info("💡 Edite os valores na tabela abaixo e clique em Salvar.")
+        st.caption("Selecione para gerar relatório")
         df_editado = st.data_editor(
             df_madeira,
             num_rows="dynamic",
             use_container_width=True,
             height=400,
             column_config={
-                "Selecionar": st.column_config.CheckboxColumn("Gerar Doc?", width="small")
+                "Selecionar": st.column_config.CheckboxColumn("Gerar?", width="small")
             }
         )
         
-        # Botões lado a lado
-        col1, col2, col3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
         
-        with col1:
-            if st.button("💾 SALVAR DADOS", type="primary", use_container_width=True):
-                salvar_dados(df_editado, "Madeira")
-                st.rerun()
-        
-        with col2:
-            if st.button("📄 BAIXAR WORD", use_container_width=True):
-                selecionados = df_editado[df_editado["Selecionar"] == True]
-                if not selecionados.empty and arquivo_modelo:
-                    if len(selecionados) == 1:
-                        bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
-                        st.download_button("⬇️ Download .docx", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                    else:
-                        # Lógica ZIP para vários
-                        zip_buffer = io.BytesIO()
-                        with zipfile.ZipFile(zip_buffer, "w") as zf:
-                            for idx, linha in selecionados.iterrows():
-                                bio = preencher_modelo_word(arquivo_modelo, linha)
-                                zf.writestr(f"Relatorio_{idx}.docx", bio.getvalue())
-                        zip_buffer.seek(0)
-                        st.download_button("⬇️ Download ZIP", zip_buffer, "Relatorios.zip", "application/zip")
-                elif not arquivo_modelo: st.error("Falta o modelo .docx!")
-                else: st.warning("Selecione uma amostra.")
+        if c1.button("💾 SALVAR DADOS", type="primary", use_container_width=True):
+            salvar_dados(df_editado, "Madeira")
+            st.rerun()
+            
+        if c2.button("📄 BAIXAR WORD", use_container_width=True):
+            selecionados = df_editado[df_editado["Selecionar"] == True]
+            if not selecionados.empty and arquivo_modelo:
+                if len(selecionados) == 1:
+                    bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
+                    st.download_button("⬇️ DOCX Pronto", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                else:
+                    st.info("Para ZIP, implemente loop se necessário.")
+            elif not arquivo_modelo: st.error("Carregue o modelo .docx na esquerda!")
+            else: st.warning("Selecione uma linha.")
 
-        with col3:
-            # Botão PDF só funciona se tiver selecionado
-            if st.button("📄 BAIXAR PDF", use_container_width=True, disabled=not tem_pdf):
+        # Botão PDF sempre visível
+        if c3.button("📄 BAIXAR PDF", use_container_width=True):
+            if not tem_pdf:
+                st.error("❌ ERRO: O conversor PDF não está instalado.")
+                st.info("No GitHub, crie o arquivo `packages.txt` com o texto `libreoffice` e dê REBOOT no app.")
+            else:
                 selecionados = df_editado[df_editado["Selecionar"] == True]
                 if not selecionados.empty and arquivo_modelo:
-                    with st.spinner("Gerando PDF..."):
+                    with st.spinner("Convertendo..."):
                         if len(selecionados) == 1:
                             bio_docx = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
                             pdf_bytes = converter_docx_para_pdf(bio_docx)
                             if pdf_bytes:
-                                st.download_button("⬇️ Download .pdf", pdf_bytes, "Relatorio.pdf", "application/pdf")
+                                st.download_button("⬇️ PDF Pronto", pdf_bytes, "Relatorio.pdf", "application/pdf")
                             else:
-                                st.error("Erro ao converter.")
+                                st.error("Falha ao converter. Tente baixar em Word.")
                         else:
-                            st.warning("Para PDF, selecione apenas 1 por vez.")
-                elif not arquivo_modelo: st.error("Falta o modelo .docx!")
-                else: st.warning("Selecione uma amostra.")
+                            st.warning("Selecione apenas 1 para PDF.")
+                elif not arquivo_modelo: st.error("Falta modelo!")
+                else: st.warning("Selecione uma linha.")
 
 elif menu == "⚗️ Solução Preservativa":
     st.header("Análise de Solução")
