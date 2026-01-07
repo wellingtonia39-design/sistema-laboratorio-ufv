@@ -9,21 +9,22 @@ import zipfile
 import os
 import subprocess
 from datetime import datetime
+import shutil
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🪵")
+st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 
 # --- NOME DA PLANILHA NO GOOGLE ---
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
 # --- MAPEAMENTO (COLUNA EXCEL -> TAG WORD) ---
-# Verifique se as tags no seu Word estão EXATAMENTE assim (letras maiúsculas/minúsculas importam)
+# Nota: Removi os espaços extras das chaves para bater com a limpeza automática
 DE_PARA_WORD = {
     "Código UFV": "«Código_UFV»",
     "Data de entrada": "«Data_de_entrada»",
     "Fim da análise": "«Fim_da_análise»",
     "Data de Registro": "«Data_de_Emissão»",
-    "Nome do Cliente ": "«Nome_do_Cliente_»", 
+    "Nome do Cliente": "«Nome_do_Cliente_»", 
     "Cidade": "«Cidade»",
     "Estado": "«Estado»",
     "E-mail": "«Email»",
@@ -41,26 +42,26 @@ DE_PARA_WORD = {
     "Balanço Cobre (%)": "«Balanço_Cobre_»",
     "Retenção Arsênio (Kg/m³)": "«Retenção_Arsênio_Kgm»",
     "Balanço Arsênio (%)": "«Balanço_Arsênio_»",
-    "Soma Concentração (%)": "« Retençãoconcentração »", # Com espaços conforme seu arquivo
+    "Soma Concentração (%)": "« Retençãoconcentração »",
     "Balanço Total (%)": "«Balanço_Total_»",
     
     # Penetração
     "Grau de penetração": "«Grau_penetração»",
-    "Descrição Grau ": "«Descrição_Grau_»",
-    "Descrição Penetração ": "«Descrição_Penetração_»",
+    "Descrição Grau": "«Descrição_Grau_»",
+    "Descrição Penetração": "«Descrição_Penetração_»",
     "Observação: Analista de Controle de Qualidade": "«Observação»"
 }
 
-# Campos que são Datas
-CAMPOS_DATA = ["Data de entrada", "Fim da análise", "Data de Registro"]
-
-# Campos Numéricos (para formatar com vírgula)
+# Campos numéricos para formatar (Vírgula)
 CAMPOS_NUMERICOS = [
     "Retenção", "Retenção Cromo (Kg/m³)", "Balanço Cromo (%)",
     "Retenção Cobre (Kg/m³)", "Balanço Cobre (%)",
     "Retenção Arsênio (Kg/m³)", "Balanço Arsênio (%)",
     "Soma Concentração (%)", "Balanço Total (%)"
 ]
+
+# Campos de Data
+CAMPOS_DATA = ["Data de entrada", "Fim da análise", "Data de Registro"]
 
 # --- FUNÇÕES AUXILIARES ---
 def conectar_google_sheets():
@@ -82,7 +83,10 @@ def carregar_dados(aba_nome):
         try:
             ws = sh.worksheet(aba_nome)
             dados = ws.get_all_records()
-            return pd.DataFrame(dados)
+            df = pd.DataFrame(dados)
+            # LIMPEZA CRÍTICA: Remove espaços extras dos nomes das colunas (ex: "Cliente " -> "Cliente")
+            df.columns = df.columns.str.strip()
+            return df
         except gspread.exceptions.WorksheetNotFound:
             sh.add_worksheet(title=aba_nome, rows=100, cols=20)
             return pd.DataFrame()
@@ -109,118 +113,112 @@ def salvar_dados(df, aba_nome):
 
 # --- FORMATAÇÃO BRASILEIRA ---
 def formatar_numero_br(valor):
-    """Converte ponto para vírgula e garante 2 casas decimais"""
     try:
-        if not valor and valor != 0: return ""
+        if valor == "" or valor is None: return ""
+        # Se vier como string "6,5", troca pra "6.5" pra virar float
         if isinstance(valor, str):
             valor = valor.replace(",", ".")
         float_val = float(valor)
+        # Formata BR
         return "{:,.2f}".format(float_val).replace(",", "X").replace(".", ",").replace("X", ".")
     except:
         return str(valor)
 
 def formatar_data_br(valor):
-    """Tenta converter datas diversas para DD/MM/AAAA"""
     if not valor: return ""
     valor = str(valor).strip()
-    formatos = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"]
+    # Tenta vários formatos
+    formatos = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"]
     for fmt in formatos:
         try:
-            data_obj = datetime.strptime(valor, fmt)
-            return data_obj.strftime("%d/%m/%Y")
-        except ValueError:
+            d = datetime.strptime(valor, fmt)
+            return d.strftime("%d/%m/%Y")
+        except:
             continue
-    return valor # Retorna original se falhar
+    return valor
 
-# --- GERADOR PDF (Via LibreOffice) ---
+# --- CONVERSOR PDF (Robustez) ---
+def verificar_libreoffice():
+    """Verifica se o LibreOffice está instalado no sistema"""
+    return shutil.which("libreoffice") is not None
+
 def converter_docx_para_pdf(docx_bytes):
-    """Salva o DOCX temporariamente, converte com LibreOffice e retorna bytes do PDF"""
     try:
-        # Salva DOCX temporário
         with open("temp_doc.docx", "wb") as f:
             f.write(docx_bytes.getvalue())
         
-        # Chama LibreOffice (precisa estar instalado no packages.txt)
-        # O comando --headless roda sem interface gráfica (ideal para servidores)
-        processo = subprocess.run(
-            ['libreoffice', '--headless', '--convert-to', 'pdf', 'temp_doc.docx', '--outdir', '.'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        # Comando para converter
+        cmd = ['libreoffice', '--headless', '--convert-to', 'pdf', 'temp_doc.docx', '--outdir', '.']
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         
         if os.path.exists("temp_doc.pdf"):
             with open("temp_doc.pdf", "rb") as f:
                 pdf_bytes = f.read()
-            # Limpeza
             os.remove("temp_doc.docx")
             os.remove("temp_doc.pdf")
             return pdf_bytes
-        else:
-            return None
+        return None
     except Exception as e:
-        st.error(f"Erro na conversão PDF: {e}")
+        st.error(f"Erro PDF: {e}")
         return None
 
-# --- PREENCHIMENTO WORD (Melhorado para não quebrar estilo) ---
+# --- PREENCHIMENTO WORD (Estilo Seguro) ---
 def preencher_modelo_word(modelo_upload, dados_linha):
     doc = Document(modelo_upload)
     
-    # Função que tenta manter o estilo original (negrito, fonte, etc)
-    def substituir_com_estilo(paragrafo, de, para):
+    def substituir_preservando_estilo(paragrafo, de, para):
         if de in paragrafo.text:
-            # Tenta substituir mantendo o estilo do primeiro 'run' que contém o texto
-            texto_completo = paragrafo.text
-            novo_texto = texto_completo.replace(de, str(para))
-            
-            # Se a substituição for simples, tenta preservar runs (é complexo, então
-            # a estratégia mais segura para não desfigurar é limpar e reescrever 
-            # com o estilo do primeiro run, ou apenas substituir o texto se for simples)
-            
-            # Estratégia Segura: Substituição direta no texto do parágrafo
-            # (Pode perder negrito parcial se a tag estiver no meio de uma frase formatada,
-            # mas evita quebra de tabela)
+            # Tenta substituir dentro dos 'runs' (pedaços de texto com mesmo estilo)
+            # Isso evita perder negrito/italico
+            substituiu_no_run = False
             for run in paragrafo.runs:
                 if de in run.text:
                     run.text = run.text.replace(de, str(para))
-                    return # Substituiu no run específico, mantém estilo
+                    substituiu_no_run = True
             
-            # Se a tag estiver dividida entre runs (ex: "«" num run e "Tag»" noutro),
-            # a substituição acima falha. O fallback é substituir o texto do parágrafo todo.
-            paragrafo.text = novo_texto
+            # Se a tag estava quebrada entre runs (ex: parte normal, parte negrito),
+            # substitui o texto inteiro do parágrafo (pode perder formatação mista, mas preenche)
+            if not substituiu_no_run:
+                paragrafo.text = paragrafo.text.replace(de, str(para))
 
-    for coluna_excel, tag_word in DE_PARA_WORD.items():
-        valor_bruto = dados_linha.get(coluna_excel, "")
-        
-        # Formatações
-        if coluna_excel in CAMPOS_NUMERICOS:
-            valor_final = formatar_numero_br(valor_bruto)
-        elif coluna_excel in CAMPOS_DATA:
-            valor_final = formatar_data_br(valor_bruto)
+    # Prepara os dados formatados
+    dados_formatados = {}
+    for col, tag in DE_PARA_WORD.items():
+        valor = dados_linha.get(col, "")
+        if col in CAMPOS_NUMERICOS:
+            dados_formatados[tag] = formatar_numero_br(valor)
+        elif col in CAMPOS_DATA:
+            dados_formatados[tag] = formatar_data_br(valor)
         else:
-            valor_final = str(valor_bruto)
+            dados_formatados[tag] = str(valor)
 
-        # Substituição
+    # Aplica no documento
+    for tag, valor in dados_formatados.items():
         for p in doc.paragraphs:
-            substituir_com_estilo(p, tag_word, valor_final)
-            
+            substituir_preservando_estilo(p, tag, valor)
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        substituir_com_estilo(p, tag_word, valor_final)
+                        substituir_preservando_estilo(p, tag, valor)
     
     bio = io.BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio
 
-# --- INTERFACE ---
-st.title("🌲 UFV - Controle de Qualidade V3")
+# --- INTERFACE PRINCIPAL ---
+st.title("🌲 UFV - Controle de Qualidade")
 
 menu = st.sidebar.radio("Módulo:", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
 st.sidebar.divider()
 st.sidebar.markdown("### 📄 Modelo de Relatório")
 arquivo_modelo = st.sidebar.file_uploader("Carregar .docx", type=["docx"])
+
+# Verifica LibreOffice para aviso visual
+tem_pdf = verificar_libreoffice()
+if not tem_pdf:
+    st.sidebar.warning("⚠️ Aviso: Conversor PDF não detectado. Adicione 'libreoffice' ao packages.txt e reinicie o app.")
 
 if menu == "🪵 Madeira Tratada":
     st.header("Análise de Madeira Tratada")
@@ -230,58 +228,61 @@ if menu == "🪵 Madeira Tratada":
         if "Selecionar" not in df_madeira.columns:
             df_madeira.insert(0, "Selecionar", False)
 
+        st.info("💡 Edite os valores na tabela abaixo e clique em Salvar.")
         df_editado = st.data_editor(
             df_madeira,
             num_rows="dynamic",
             use_container_width=True,
             height=400,
-            column_config={"Selecionar": st.column_config.CheckboxColumn("Relatório?", width="small")}
+            column_config={
+                "Selecionar": st.column_config.CheckboxColumn("Gerar Doc?", width="small")
+            }
         )
         
-        c1, c2, c3 = st.columns([1, 1, 1])
-        if c1.button("💾 SALVAR DADOS", type="primary"):
-            salvar_dados(df_editado, "Madeira")
-            st.rerun()
-
-        # Botão Word
-        if c2.button("📄 BAIXAR WORD (.docx)"):
-            selecionados = df_editado[df_editado["Selecionar"] == True]
-            if not selecionados.empty and arquivo_modelo:
-                with st.spinner("Gerando Word..."):
+        # Botões lado a lado
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("💾 SALVAR DADOS", type="primary", use_container_width=True):
+                salvar_dados(df_editado, "Madeira")
+                st.rerun()
+        
+        with col2:
+            if st.button("📄 BAIXAR WORD", use_container_width=True):
+                selecionados = df_editado[df_editado["Selecionar"] == True]
+                if not selecionados.empty and arquivo_modelo:
                     if len(selecionados) == 1:
-                        linha = selecionados.iloc[0]
-                        bio = preencher_modelo_word(arquivo_modelo, linha)
-                        st.download_button("⬇️ Download DOCX", bio, f"Relatorio_{linha.get('Código UFV','amostra')}.docx", key="dw_word")
+                        bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
+                        st.download_button("⬇️ Download .docx", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                     else:
+                        # Lógica ZIP para vários
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w") as zf:
                             for idx, linha in selecionados.iterrows():
                                 bio = preencher_modelo_word(arquivo_modelo, linha)
-                                zf.writestr(f"Relatorio_{linha.get('Código UFV', idx)}.docx", bio.getvalue())
+                                zf.writestr(f"Relatorio_{idx}.docx", bio.getvalue())
                         zip_buffer.seek(0)
-                        st.download_button("⬇️ Download ZIP (Word)", zip_buffer, "Relatorios_UFV.zip", "application/zip", key="dw_zip")
-            elif not arquivo_modelo: st.warning("Carregue o modelo!")
-            else: st.info("Selecione uma amostra.")
+                        st.download_button("⬇️ Download ZIP", zip_buffer, "Relatorios.zip", "application/zip")
+                elif not arquivo_modelo: st.error("Falta o modelo .docx!")
+                else: st.warning("Selecione uma amostra.")
 
-        # Botão PDF
-        if c3.button("📄 BAIXAR PDF (.pdf)"):
-            selecionados = df_editado[df_editado["Selecionar"] == True]
-            if not selecionados.empty and arquivo_modelo:
-                with st.spinner("Convertendo para PDF (Isso pode demorar um pouco)..."):
-                    # Processo individual para PDF
-                    if len(selecionados) == 1:
-                        linha = selecionados.iloc[0]
-                        bio_docx = preencher_modelo_word(arquivo_modelo, linha)
-                        pdf_bytes = converter_docx_para_pdf(bio_docx)
-                        
-                        if pdf_bytes:
-                            st.download_button("⬇️ Download PDF", pdf_bytes, f"Relatorio_{linha.get('Código UFV','amostra')}.pdf", "application/pdf", key="dw_pdf")
+        with col3:
+            # Botão PDF só funciona se tiver selecionado
+            if st.button("📄 BAIXAR PDF", use_container_width=True, disabled=not tem_pdf):
+                selecionados = df_editado[df_editado["Selecionar"] == True]
+                if not selecionados.empty and arquivo_modelo:
+                    with st.spinner("Gerando PDF..."):
+                        if len(selecionados) == 1:
+                            bio_docx = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
+                            pdf_bytes = converter_docx_para_pdf(bio_docx)
+                            if pdf_bytes:
+                                st.download_button("⬇️ Download .pdf", pdf_bytes, "Relatorio.pdf", "application/pdf")
+                            else:
+                                st.error("Erro ao converter.")
                         else:
-                            st.error("Falha na conversão PDF. Verifique se o 'libreoffice' está no packages.txt ou tente baixar em Word.")
-                    else:
-                        st.warning("Para PDF, selecione apenas uma amostra por vez para evitar sobrecarga do servidor.")
-            elif not arquivo_modelo: st.warning("Carregue o modelo!")
-            else: st.info("Selecione uma amostra.")
+                            st.warning("Para PDF, selecione apenas 1 por vez.")
+                elif not arquivo_modelo: st.error("Falta o modelo .docx!")
+                else: st.warning("Selecione uma amostra.")
 
 elif menu == "⚗️ Solução Preservativa":
     st.header("Análise de Solução")
@@ -295,7 +296,7 @@ elif menu == "⚗️ Solução Preservativa":
 elif menu == "📊 Dashboard":
     st.header("Dashboard Gerencial")
     df_m = carregar_dados("Madeira")
-    if not df_m.empty and 'Nome do Cliente ' in df_m.columns:
-        contagem = df_m['Nome do Cliente '].value_counts().reset_index()
+    if not df_m.empty and 'Nome do Cliente' in df_m.columns:
+        contagem = df_m['Nome do Cliente'].value_counts().reset_index()
         contagem.columns = ['Cliente', 'Quantidade']
         st.plotly_chart(px.bar(contagem, x='Cliente', y='Quantidade', title="Análises por Cliente"))
