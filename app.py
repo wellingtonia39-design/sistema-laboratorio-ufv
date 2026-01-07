@@ -13,13 +13,15 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 # --- NOME DA PLANILHA NO GOOGLE ---
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
-# --- MAPEAMENTO: COLUNA EXCEL -> TAG NO WORD ---
-# Ajuste aqui se o nome no Word for diferente
+# --- MAPEAMENTO ATUALIZADO (CORREÇÃO DE NOMES) ---
+# Esquerda: Nome exato na Coluna do Excel/Google
+# Direita: A Tag que está escrita no arquivo Word
 DE_PARA_WORD = {
     "Código UFV": "«Código_UFV»",
     "Data de entrada": "«Data_de_entrada»",
     "Fim da análise": "«Fim_da_análise»",
-    "Nome do Cliente ": "«Nome_do_Cliente_»", # Note o espaço no final se houver no excel
+    "Data de Registro": "«Data_de_Emissão»", # Ajuste se necessário
+    "Nome do Cliente ": "«Nome_do_Cliente_»", 
     "Cidade": "«Cidade»",
     "Estado": "«Estado»",
     "E-mail": "«Email»",
@@ -28,20 +30,34 @@ DE_PARA_WORD = {
     "Produto utilizado": "«Produto_utilizado»",
     "Aplicação": "«Aplicação»",
     "Norma ABNT": "«Norma_ABNT»",
+    
+    # --- DADOS QUÍMICOS (Vão passar pela formatação de vírgula) ---
     "Retenção": "«Retenção»",
-    # Mapeamento dos resultados químicos
     "Retenção Cromo (Kg/m³)": "«Retenção_Cromo_Kgm»",
-    "Balanço Cromo %": "«Balanço_Cromo_»",
+    "Balanço Cromo (%)": "«Balanço_Cromo_»", # Ajustado conforme seu PDF
     "Retenção Cobre (Kg/m³)": "«Retenção_Cobre_Kgm»",
-    "Balanço Cobre %": "«Balanço_Cobre_»",
+    "Balanço Cobre (%)": "«Balanço_Cobre_»",
     "Retenção Arsênio (Kg/m³)": "«Retenção_Arsênio_Kgm»",
-    "Balanço Arsênio %": "«Balanço_Arsênio_»",
-    "Balanço Total": "«Balanço_Total_»",
-    # Mapeamento de Penetração
-    "Grau penetração": "«Grau_penetração»",
+    "Balanço Arsênio (%)": "«Balanço_Arsênio_»",
+    "Soma Concentração (%)": "« Retençãoconcentração »", # Corrigido conforme erro no DOCX
+    "Balanço Total (%)": "«Balanço_Total_»",
+    
+    # --- PENETRAÇÃO ---
+    "Grau de penetração": "«Grau_penetração»",
     "Descrição Grau ": "«Descrição_Grau_»",
-    "Descrição Penetração ": "«Descrição_Penetração_»"
+    "Descrição Penetração ": "«Descrição_Penetração_»",
+    
+    # --- OBSERVAÇÕES ---
+    "Observação: Analista de Controle de Qualidade": "«Observação»" # Nome longo corrigido
 }
+
+# Lista de campos que devem ser formatados como número (0,00)
+CAMPOS_NUMERICOS = [
+    "Retenção", "Retenção Cromo (Kg/m³)", "Balanço Cromo (%)",
+    "Retenção Cobre (Kg/m³)", "Balanço Cobre (%)",
+    "Retenção Arsênio (Kg/m³)", "Balanço Arsênio (%)",
+    "Soma Concentração (%)", "Balanço Total (%)"
+]
 
 # --- FUNÇÕES AUXILIARES ---
 def conectar_google_sheets():
@@ -78,44 +94,59 @@ def salvar_dados(df, aba_nome):
         try:
             ws = sh.worksheet(aba_nome)
             ws.clear()
-            # Remove a coluna temporária de seleção antes de salvar
             if "Selecionar" in df.columns:
                 df_salvar = df.drop(columns=["Selecionar"])
             else:
                 df_salvar = df
-            
             lista_dados = [df_salvar.columns.values.tolist()] + df_salvar.values.tolist()
             ws.update(lista_dados)
             st.toast(f"Dados de {aba_nome} salvos com sucesso!", icon="✅")
         except Exception as e:
             st.error(f"Erro ao salvar: {e}")
 
-# --- FUNÇÃO GERADORA DE RELATÓRIO WORD ---
+# --- FUNÇÃO DE FORMATAÇÃO BRASILEIRA ---
+def formatar_numero_br(valor):
+    """Converte 6.5 para '6,50' e mantém texto se não for número"""
+    try:
+        if isinstance(valor, str):
+            valor = valor.replace(",", ".") # Garante que string vira float
+        float_val = float(valor)
+        # Formata com 2 casas decimais e troca ponto por vírgula
+        return "{:,.2f}".format(float_val).replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return str(valor)
+
+# --- GERADOR WORD ---
 def preencher_modelo_word(modelo_upload, dados_linha):
     doc = Document(modelo_upload)
     
-    # Função interna para substituir texto em parágrafos
     def substituir_no_paragrafo(paragrafo, de, para):
         if de in paragrafo.text:
-            # Substituição simples (pode perder formatação parcial da palavra, mas funciona)
-            paragrafo.text = paragrafo.text.replace(de, str(para))
+            # Preserva formatação usando 'runs' se possível, senão substitui direto
+            if len(paragrafo.runs) > 0 and de in paragrafo.runs[0].text:
+                 paragrafo.runs[0].text = paragrafo.runs[0].text.replace(de, str(para))
+            else:
+                 paragrafo.text = paragrafo.text.replace(de, str(para))
 
-    # Itera sobre todas as chaves do dicionário DE_PARA
     for coluna_excel, tag_word in DE_PARA_WORD.items():
-        valor = dados_linha.get(coluna_excel, "")
+        valor_bruto = dados_linha.get(coluna_excel, "")
         
-        # 1. Substituir nos parágrafos normais
+        # Aplica formatação de número se for um campo numérico
+        if coluna_excel in CAMPOS_NUMERICOS:
+            valor_final = formatar_numero_br(valor_bruto)
+        else:
+            valor_final = str(valor_bruto)
+
+        # Substituição no documento
         for p in doc.paragraphs:
-            substituir_no_paragrafo(p, tag_word, valor)
+            substituir_no_paragrafo(p, tag_word, valor_final)
             
-        # 2. Substituir dentro de tabelas
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        substituir_no_paragrafo(p, tag_word, valor)
+                        substituir_no_paragrafo(p, tag_word, valor_final)
     
-    # Salva em memória
     bio = io.BytesIO()
     doc.save(bio)
     bio.seek(0)
@@ -124,115 +155,64 @@ def preencher_modelo_word(modelo_upload, dados_linha):
 # --- INTERFACE PRINCIPAL ---
 st.title("🌲 UFV - Controle de Qualidade")
 
-# Menu Lateral
 menu = st.sidebar.radio("Módulo:", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
 st.sidebar.divider()
-
-# Upload do Modelo (Fica na barra lateral para não ocupar espaço)
 st.sidebar.markdown("### 📄 Modelo de Relatório")
 arquivo_modelo = st.sidebar.file_uploader("Carregar .docx", type=["docx"])
 
-# ==================================================
-# MÓDULO 1: MADEIRA TRATADA
-# ==================================================
 if menu == "🪵 Madeira Tratada":
     st.header("Análise de Madeira Tratada")
-    
     df_madeira = carregar_dados("Madeira")
     
     if not df_madeira.empty:
-        # Adiciona coluna de Checkbox para seleção (se não existir)
         if "Selecionar" not in df_madeira.columns:
             df_madeira.insert(0, "Selecionar", False)
 
-        # --- EDITOR DE TABELA ---
-        st.caption("Selecione as amostras na primeira coluna para gerar relatório.")
-        
         df_editado = st.data_editor(
             df_madeira,
             num_rows="dynamic",
             use_container_width=True,
             height=400,
-            key="editor_madeira",
             column_config={
-                "Selecionar": st.column_config.CheckboxColumn(
-                    "Gerar Relatório?",
-                    help="Marque para baixar o Word desta amostra",
-                    default=False,
-                )
+                "Selecionar": st.column_config.CheckboxColumn("Relatório?", width="small")
             }
         )
         
-        # --- ÁREA DE AÇÃO ---
-        col_btn1, col_btn2 = st.columns([1, 1])
-        
-        # Botão Salvar
-        with col_btn1:
-            if st.button("💾 SALVAR DADOS", type="primary"):
-                salvar_dados(df_editado, "Madeira")
-                st.rerun()
-
-        # Botão Gerar Relatório
-        with col_btn2:
-            amostras_selecionadas = df_editado[df_editado["Selecionar"] == True]
-            
-            if not amostras_selecionadas.empty:
-                st.markdown(f"**{len(amostras_selecionadas)} amostras selecionadas.**")
-                
-                if arquivo_modelo:
-                    if st.button("📄 GERAR RELATÓRIOS WORD"):
-                        with st.spinner("Gerando documentos..."):
-                            
-                            # Caso 1: Apenas uma amostra
-                            if len(amostras_selecionadas) == 1:
-                                linha = amostras_selecionadas.iloc[0]
-                                bio_word = preencher_modelo_word(arquivo_modelo, linha)
-                                nome_arquivo = f"Relatorio_{linha.get('Código UFV', 'amostra')}.docx"
-                                
-                                st.download_button(
-                                    label="⬇️ Baixar DOCX",
-                                    data=bio_word,
-                                    file_name=nome_arquivo,
-                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                                )
-                            
-                            # Caso 2: Múltiplas amostras (Gera ZIP)
-                            else:
-                                zip_buffer = io.BytesIO()
-                                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                                    for idx, linha in amostras_selecionadas.iterrows():
-                                        bio_word = preencher_modelo_word(arquivo_modelo, linha)
-                                        nome_arquivo = f"Relatorio_{linha.get('Código UFV', f'amostra_{idx}')}.docx"
-                                        zf.writestr(nome_arquivo, bio_word.getvalue())
-                                
-                                zip_buffer.seek(0)
-                                st.download_button(
-                                    label="⬇️ Baixar Todos (ZIP)",
-                                    data=zip_buffer,
-                                    file_name="Relatorios_UFV.zip",
-                                    mime="application/zip"
-                                )
-                else:
-                    st.warning("⚠️ Por favor, faça upload do arquivo .docx do Modelo na barra lateral esquerda.")
-            else:
-                st.info("Marque a caixinha 'Gerar Relatório?' nas linhas que deseja imprimir.")
-
-# ==================================================
-# MÓDULO 2: SOLUÇÃO (Mantido Simples)
-# ==================================================
-elif menu == "⚗️ Solução Preservativa":
-    st.header("Análise de Solução")
-    df_solucao = carregar_dados("Solucao")
-    
-    if not df_solucao.empty:
-        df_editado_sol = st.data_editor(df_solucao, num_rows="dynamic", use_container_width=True)
-        if st.button("💾 SALVAR DADOS SOLUÇÃO"):
-            salvar_dados(df_editado_sol, "Solucao")
+        c1, c2 = st.columns([1, 1])
+        if c1.button("💾 SALVAR DADOS", type="primary"):
+            salvar_dados(df_editado, "Madeira")
             st.rerun()
 
-# ==================================================
-# MÓDULO 3: DASHBOARD (Mantido)
-# ==================================================
+        if c2.button("📄 GERAR RELATÓRIOS"):
+            selecionados = df_editado[df_editado["Selecionar"] == True]
+            if not selecionados.empty and arquivo_modelo:
+                with st.spinner("Formatando e gerando..."):
+                    if len(selecionados) == 1:
+                        linha = selecionados.iloc[0]
+                        bio = preencher_modelo_word(arquivo_modelo, linha)
+                        st.download_button("⬇️ Baixar DOCX", bio, f"Relatorio_{linha.get('Código UFV','amostra')}.docx")
+                    else:
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w") as zf:
+                            for idx, linha in selecionados.iterrows():
+                                bio = preencher_modelo_word(arquivo_modelo, linha)
+                                zf.writestr(f"Relatorio_{linha.get('Código UFV', idx)}.docx", bio.getvalue())
+                        zip_buffer.seek(0)
+                        st.download_button("⬇️ Baixar ZIP", zip_buffer, "Relatorios_UFV.zip", "application/zip")
+            elif not arquivo_modelo:
+                st.warning("⚠️ Carregue o modelo .docx na barra lateral!")
+            else:
+                st.info("Selecione pelo menos uma amostra.")
+
+elif menu == "⚗️ Solução Preservativa":
+    st.header("Análise de Solução")
+    df_sol = carregar_dados("Solucao")
+    if not df_sol.empty:
+        df_ed = st.data_editor(df_sol, num_rows="dynamic", use_container_width=True)
+        if st.button("💾 SALVAR SOLUÇÃO"):
+            salvar_dados(df_ed, "Solucao")
+            st.rerun()
+
 elif menu == "📊 Dashboard":
     st.header("Dashboard Gerencial")
     df_m = carregar_dados("Madeira")
