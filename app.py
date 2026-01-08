@@ -237,4 +237,3 @@ elif menu == "⚗️ Solução Preservativa":
     if not df.empty:
         df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
         if st.button("Salvar Solução"): salvar_dados(df_ed, "Solucao"); st.rerun()
-
