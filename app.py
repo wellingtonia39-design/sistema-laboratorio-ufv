@@ -39,17 +39,23 @@ DE_PARA_WORD = {
     "Balanço Cobre (%)": "«Balanço_Cobre_»",
     "Retenção Arsênio (Kg/m³)": "«Retenção_Arsênio_Kgm»",
     "Balanço Arsênio (%)": "«Balanço_Arsênio_»",
-    "Soma Concentração (%)": "« Retençãoconcentração »",
+    "Soma Concentração (%)": "« Retençãoconcentração »", # Nota: Mantive os espaços pois parece ser como está no seu Word
     "Balanço Total (%)": "«Balanço_Total_»",
     "Grau de penetração": "«Grau_penetração»",
     "Descrição Grau": "«Descrição_Grau_»",
     "Descrição Penetração": "«Descrição_Penetração_»",
     "Observação: Analista de Controle de Qualidade": "«Observação»"
 }
-CAMPOS_NUMERICOS = ["Retenção", "Retenção Cromo (Kg/m³)", "Balanço Cromo (%)", "Retenção Cobre (Kg/m³)", "Balanço Cobre (%)", "Retenção Arsênio (Kg/m³)", "Balanço Arsênio (%)", "Soma Concentração (%)", "Balanço Total (%)"]
+
+# Campos que precisam de ajuste matemático se vierem sem vírgula
+CAMPOS_QUIMICOS = [
+    "Retenção Cromo (Kg/m³)", "Retenção Cobre (Kg/m³)", "Retenção Arsênio (Kg/m³)", 
+    "Retenção", "Soma Concentração (%)"
+]
+CAMPOS_NUMERICOS = CAMPOS_QUIMICOS + ["Balanço Cromo (%)", "Balanço Cobre (%)", "Balanço Arsênio (%)", "Balanço Total (%)"]
 CAMPOS_DATA = ["Data de entrada", "Fim da análise", "Data de Registro"]
 
-# --- FUNÇÕES BÁSICAS ---
+# --- FUNÇÕES ---
 def conectar_google_sheets():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -70,7 +76,7 @@ def carregar_dados(aba_nome):
             ws = sh.worksheet(aba_nome)
             df = pd.DataFrame(ws.get_all_records())
             if not df.empty: df.columns = df.columns.str.strip()
-            df = df.astype(str) # Evita erros de tipo
+            df = df.astype(str)
             return df
         except: return pd.DataFrame()
     return pd.DataFrame()
@@ -83,17 +89,21 @@ def salvar_dados(df, aba_nome):
             ws.clear()
             df_salvar = df.drop(columns=["Selecionar"]) if "Selecionar" in df.columns else df
             ws.update([df_salvar.columns.values.tolist()] + df_salvar.values.tolist())
-            st.toast("Salvo com sucesso!", icon="✅")
+            st.toast("Salvo!", icon="✅")
         except Exception as e: st.error(f"Erro Salvar: {e}")
 
-# --- FORMATAÇÃO ---
-def formatar_numero_br(valor):
+def formatar_numero_br(valor, nome_coluna=""):
     try:
         if not valor: return ""
         v = str(valor).replace(",", ".")
-        # Lógica para evitar números gigantes se o Excel mandou sem vírgula
-        # Ex: Se vier 368 num campo de porcentagem/retenção, assume 3.68
         f_val = float(v)
+        
+        # CORREÇÃO AUTOMÁTICA DE ESCALA
+        # Se for um campo químico (ex: Cromo) e o valor for > 100 (ex: 368),
+        # assume que faltou a vírgula e divide por 100.
+        if nome_coluna in CAMPOS_QUIMICOS and f_val > 100:
+            f_val = f_val / 100.0
+            
         return "{:,.2f}".format(f_val).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(valor)
 
@@ -105,30 +115,17 @@ def formatar_data_br(valor):
         except: continue
     return v
 
-# --- CONVERSOR PDF OTIMIZADO ---
 def converter_docx_para_pdf(docx_bytes):
     if not lo_bin: return None, "LibreOffice não instalado."
     try:
         with open("temp.docx", "wb") as f: f.write(docx_bytes.getvalue())
-        
-        # Comando Otimizado para melhor fidelidade visual
-        cmd = [
-            lo_bin, 
-            '--headless', 
-            '--convert-to', 'pdf:writer_pdf_Export', # Força exportador nativo
-            '--outdir', '.', 
-            '--nologo', 
-            '--nofirststartwizard', 
-            'temp.docx'
-        ]
-        
+        cmd = [lo_bin, '--headless', '--convert-to', 'pdf:writer_pdf_Export', '--outdir', '.', '--nologo', '--nofirststartwizard', 'temp.docx']
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        
         if os.path.exists("temp.pdf"):
             with open("temp.pdf", "rb") as f: pdf = f.read()
             os.remove("temp.docx"); os.remove("temp.pdf")
             return pdf, None
-        return None, "O arquivo PDF não foi gerado."
+        return None, "Erro na conversão."
     except Exception as e: return None, str(e)
 
 def preencher_modelo_word(modelo_upload, dados_linha):
@@ -136,19 +133,26 @@ def preencher_modelo_word(modelo_upload, dados_linha):
     
     def substituir(paragrafo, de, para):
         if de in paragrafo.text:
-            alterado = False
-            for run in paragrafo.runs:
-                if de in run.text:
-                    run.text = run.text.replace(de, str(para))
-                    alterado = True
-            if not alterado: paragrafo.text = paragrafo.text.replace(de, str(para))
+            try:
+                # Tenta substituir mantendo formatação
+                for run in paragrafo.runs:
+                    if de in run.text:
+                        run.text = run.text.replace(de, str(para))
+                        return
+                # Fallback
+                paragrafo.text = paragrafo.text.replace(de, str(para))
+            except: pass
 
     dados_fmt = {}
     for col, tag in DE_PARA_WORD.items():
         val = dados_linha.get(col, "")
-        if col in CAMPOS_NUMERICOS: dados_fmt[tag] = formatar_numero_br(val)
-        elif col in CAMPOS_DATA: dados_fmt[tag] = formatar_data_br(val)
-        else: dados_fmt[tag] = str(val)
+        if col in CAMPOS_NUMERICOS: 
+            # Passa o nome da coluna para decidir se divide por 100
+            dados_fmt[tag] = formatar_numero_br(val, col)
+        elif col in CAMPOS_DATA: 
+            dados_fmt[tag] = formatar_data_br(val)
+        else: 
+            dados_fmt[tag] = str(val)
 
     for tag, val in dados_fmt.items():
         if val is None: val = ""
@@ -178,7 +182,6 @@ def check_login():
             try:
                 ws = sh.worksheet("Usuarios")
                 df_users = pd.DataFrame(ws.get_all_records())
-                # Converte para string para garantir comparação correta
                 df_users['Usuario'] = df_users['Usuario'].astype(str)
                 df_users['Senha'] = df_users['Senha'].astype(str)
                 
@@ -217,9 +220,8 @@ if check_login():
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
             
-            # --- CONFIGURAÇÃO DA TABELA (PERMISSÕES) ---
+            # --- CONFIGURAÇÃO DA TABELA ---
             if tipo == "LPM":
-                # LPM: Pode editar tudo
                 st.info("🛠️ Modo Editor (LPM)")
                 df_ed = st.data_editor(
                     df, num_rows="dynamic", use_container_width=True, height=400,
@@ -228,9 +230,8 @@ if check_login():
                 if st.button("💾 SALVAR ALTERAÇÕES", type="primary"):
                     salvar_dados(df_ed, "Madeira"); st.rerun()
             else:
-                # Montana: Só vê e marca checkbox
-                st.warning("👀 Modo Visualizador (Montana)")
-                # Bloqueia todas as colunas exceto Selecionar
+                # MONTANA: Tabela Travada
+                st.warning(f"👀 Modo Visualizador ({tipo})")
                 cfg = {col: st.column_config.Column(disabled=True) for col in df.columns if col != "Selecionar"}
                 cfg["Selecionar"] = st.column_config.CheckboxColumn("Gerar PDF?", width="small", disabled=False)
                 
@@ -241,46 +242,46 @@ if check_login():
 
             st.divider()
             
-            # --- BOTÕES DE AÇÃO ---
-            # Seleciona a linha marcada
+            # --- BOTÕES DE DOWNLOAD ---
             selecionados = df_ed[df_ed["Selecionar"] == True]
             
-            # Prepara o nome do arquivo (Pega o ID da primeira linha selecionada)
+            # Nome do Arquivo Inteligente (Usa o Código UFV)
             nome_arquivo = "Relatorio"
             if not selecionados.empty:
-                id_amostra = str(selecionados.iloc[0].get("Código UFV", "")).strip()
-                if id_amostra: nome_arquivo = id_amostra # Ex: UFV-M-620
+                cod = str(selecionados.iloc[0].get("Código UFV", "")).strip()
+                if cod: nome_arquivo = cod # Ex: UFV-M-620
             
             if tipo == "LPM":
+                # LPM Vê Word e PDF
                 c1, c2 = st.columns(2)
-                # LPM VÊ TUDO
                 with c1:
                     if st.button("📝 Baixar DOCX", use_container_width=True):
                         if not selecionados.empty and arquivo_modelo:
                             bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
                             st.download_button(f"⬇️ {nome_arquivo}.docx", bio, f"{nome_arquivo}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                        else: st.error("Selecione uma linha e o modelo.")
-                
+                        else: st.error("Selecione uma linha e carregue o modelo.")
                 with c2:
                     if st.button("📄 Baixar PDF", use_container_width=True):
                         if not selecionados.empty and arquivo_modelo:
-                            with st.spinner("Gerando PDF..."):
+                            with st.spinner(f"Gerando PDF {nome_arquivo}..."):
                                 bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
                                 pdf, erro = converter_docx_para_pdf(bio)
                                 if pdf: st.download_button(f"⬇️ {nome_arquivo}.pdf", pdf, f"{nome_arquivo}.pdf", "application/pdf")
                                 else: st.error(f"Erro: {erro}")
-                        else: st.error("Selecione uma linha e o modelo.")
+                        else: st.error("Selecione uma linha e carregue o modelo.")
             
             else:
-                # MONTANA SÓ VÊ PDF
+                # MONTANA: SÓ PDF (Botão Único Grande)
                 if st.button("📄 GERAR RELATÓRIO PDF", type="primary", use_container_width=True):
                     if not selecionados.empty and arquivo_modelo:
-                        with st.spinner(f"Gerando PDF para {nome_arquivo}..."):
+                        with st.spinner(f"Processando {nome_arquivo}.pdf ..."):
                             bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
                             pdf, erro = converter_docx_para_pdf(bio)
-                            if pdf: st.download_button(f"⬇️ BAIXAR {nome_arquivo}.pdf", pdf, f"{nome_arquivo}.pdf", "application/pdf")
-                            else: st.error("Erro na conversão. Contate o laboratório.")
-                    else: st.warning("Selecione a amostra na tabela e garanta que o modelo está carregado.")
+                            if pdf: 
+                                st.balloons() # Efeito visual de sucesso
+                                st.download_button(f"⬇️ BAIXAR ARQUIVO: {nome_arquivo}.pdf", pdf, f"{nome_arquivo}.pdf", "application/pdf")
+                            else: st.error("Erro na conversão. O servidor pode estar ocupado.")
+                    else: st.warning("Selecione a amostra na tabela e carregue o arquivo .docx na esquerda.")
 
     elif menu == "⚗️ Solução Preservativa":
         st.header("Solução Preservativa")
@@ -295,4 +296,5 @@ if check_login():
     elif menu == "📊 Dashboard":
         st.header("Dashboard"); df = carregar_dados("Madeira")
         if not df.empty and 'Nome do Cliente' in df.columns:
+            import plotly.express as px
             st.plotly_chart(px.bar(df['Nome do Cliente'].value_counts().reset_index(), x='Nome do Cliente', y='count'))
