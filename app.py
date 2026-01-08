@@ -11,20 +11,27 @@ from datetime import datetime
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
-# --- FUNÇÕES DE TEXTO ---
+# --- FUNÇÕES DE TEXTO E DADOS ---
 def clean_text(text):
     if pd.isna(text): return ""
-    # Remove caracteres que quebram o PDF
     return str(text).encode('latin-1', 'replace').decode('latin-1')
 
 def formatar_numero(valor, is_quimico=False):
+    # Se for None ou string vazia, retorna traço. Mas se for 0, formata!
+    if valor is None or valor == "":
+        return "-"
+    
     try:
-        if not valor and valor != 0: return "-"
         v_str = str(valor).replace(",", ".")
         v_float = float(v_str)
-        if is_quimico and v_float > 100: v_float /= 100.0
+        
+        # Correção para números químicos (ex: 368 -> 3.68)
+        if is_quimico and v_float > 100: 
+            v_float /= 100.0
+            
         return "{:,.2f}".format(v_float).replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return str(valor)
+    except:
+        return str(valor)
 
 def formatar_data(valor):
     try:
@@ -36,10 +43,16 @@ def formatar_data(valor):
         return v_str
     except: return str(valor)
 
+# Função Inteligente para Buscar Colunas (Tenta variações do nome)
+def buscar_valor(dados, lista_nomes):
+    for nome in lista_nomes:
+        if nome in dados:
+            return dados[nome]
+    return "" # Não achou nada
+
 # --- CLASSE DO PDF ---
 class RelatorioPDF(FPDF):
     def header(self):
-        # Logos
         if os.path.exists("logo_ufv.png"):
             self.image("logo_ufv.png", 10, 8, 30)
         if os.path.exists("logo_montana.png"):
@@ -54,16 +67,13 @@ class RelatorioPDF(FPDF):
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, clean_text(f'Página {self.page_no()}'), 0, 0, 'C')
 
-    # --- NOVA FUNÇÃO: DESENHAR CAMPO TIPO FORMULÁRIO ---
+    # Função para desenhar campo tipo formulário (Texto em cima, caixa embaixo)
     def campo_form(self, label, valor, x, y, w, h=7, align='L'):
-        # 1. Desenha o Label (Texto em cima, sem borda)
         self.set_xy(x, y)
-        self.set_font('Arial', '', 8) # Fonte menor para o rótulo
+        self.set_font('Arial', '', 8)
         self.cell(w, 4, clean_text(label), 0, 0, 'L')
-        
-        # 2. Desenha a Caixa (Valor embaixo, com borda)
         self.set_xy(x, y + 4)
-        self.set_font('Arial', '', 10) # Fonte normal para o valor
+        self.set_font('Arial', '', 10)
         self.cell(w, h, clean_text(valor), 1, 0, align)
 
 # --- GERADOR PDF ---
@@ -72,68 +82,69 @@ def gerar_pdf_nativo(dados):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Prepara dados
-    dt_entrada = formatar_data(dados.get("Data de entrada", ""))
-    id_rel = clean_text(dados.get("Código UFV", ""))
-    # Data Emissão: Pega Registro, se não tiver, pega Fim Analise
-    raw_emissao = dados.get("Data de Registro", "") if dados.get("Data de Registro") else dados.get("Fim da análise")
+    # Busca inteligente de dados
+    dt_entrada = formatar_data(buscar_valor(dados, ["Data de entrada", "Entrada"]))
+    id_rel = clean_text(buscar_valor(dados, ["Código UFV", "Codigo UFV", "ID"]))
+    
+    raw_emissao = buscar_valor(dados, ["Data de Registro", "Data Emissao", "Fim da análise"])
     dt_emissao = formatar_data(raw_emissao)
 
-    # --- TOPO (DATAS E ID) ---
-    # Posicionamento manual para ficar igual ao print
+    # --- TOPO ---
     y_topo = 35
-    
-    # Esquerda: Data de Entrada
     pdf.campo_form("Data de Entrada", dt_entrada, x=10, y=y_topo, w=50, align='C')
-    
-    # Direita: ID e Emissão (Um embaixo do outro)
     pdf.campo_form("Número ID", id_rel, x=140, y=y_topo - 5, w=60, align='C')
     pdf.campo_form("Data de Emissão", dt_emissao, x=140, y=y_topo + 8, w=60, align='C')
 
-    pdf.set_y(y_topo + 25) # Avança Y para o próximo bloco
+    pdf.set_y(y_topo + 25)
 
-    # --- DADOS DO CLIENTE ---
-    # Título da Seção
+    # --- CLIENTE ---
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(0, 6, clean_text("DADOS DO CLIENTE"), 0, 1, 'L')
     y_cli = pdf.get_y()
     
-    # Linha 1: Cliente (Largura total)
-    pdf.campo_form("Cliente", dados.get("Nome do Cliente", ""), x=10, y=y_cli, w=190)
+    nome_cli = buscar_valor(dados, ["Nome do Cliente", "Cliente"])
+    pdf.campo_form("Cliente", nome_cli, x=10, y=y_cli, w=190)
     
-    # Linha 2: Cidade e Email
-    y_cli += 13 # Pula altura do campo anterior + espaço
-    pdf.campo_form("Cidade/UF", f"{dados.get('Cidade', '')}/{dados.get('Estado', '')}", x=10, y=y_cli, w=90)
-    pdf.campo_form("E-mail", dados.get("E-mail", ""), x=105, y=y_cli, w=95)
+    y_cli += 13
+    cid = clean_text(buscar_valor(dados, ["Cidade", "Municipio"]))
+    uf = clean_text(buscar_valor(dados, ["Estado", "UF"]))
+    email = clean_text(buscar_valor(dados, ["E-mail", "Email"]))
     
-    pdf.set_y(y_cli + 15) # Avança Y
+    pdf.campo_form("Cidade/UF", f"{cid}/{uf}", x=10, y=y_cli, w=90)
+    pdf.campo_form("E-mail", email, x=105, y=y_cli, w=95)
+    
+    pdf.set_y(y_cli + 15)
 
-    # --- IDENTIFICAÇÃO DA AMOSTRA ---
+    # --- AMOSTRA ---
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(0, 6, clean_text("IDENTIFICAÇÃO DA AMOSTRA"), 0, 1, 'L')
     y_ams = pdf.get_y()
     
-    # Linha 1: Ref Cliente
-    pdf.campo_form("Ref. Cliente (Amostra)", dados.get("Indentificação de Amostra do cliente", ""), x=10, y=y_ams, w=190)
+    ref_cli = buscar_valor(dados, ["Indentificação de Amostra do cliente", "Amostra"])
+    pdf.campo_form("Ref. Cliente (Amostra)", ref_cli, x=10, y=y_ams, w=190)
     
-    # Linha 2: Madeira e Produto
     y_ams += 13
-    pdf.campo_form("Madeira", dados.get("Madeira", ""), x=10, y=y_ams, w=90)
-    pdf.campo_form("Produto", dados.get("Produto utilizado", ""), x=105, y=y_ams, w=95)
+    madeira = buscar_valor(dados, ["Madeira", "Especie"])
+    produto = buscar_valor(dados, ["Produto utilizado", "Produto"])
+    pdf.campo_form("Madeira", madeira, x=10, y=y_ams, w=90)
+    pdf.campo_form("Produto", produto, x=105, y=y_ams, w=95)
     
-    # Linha 3: Aplicação, Norma, Retenção
     y_ams += 13
-    pdf.campo_form("Aplicação", dados.get("Aplicação", ""), x=10, y=y_ams, w=60)
-    pdf.campo_form("Norma ABNT", dados.get("Norma ABNT", ""), x=75, y=y_ams, w=60)
-    pdf.campo_form("Retenção Esp.", formatar_numero(dados.get("Retenção", ""), True), x=140, y=y_ams, w=60, align='C')
+    aplicacao = buscar_valor(dados, ["Aplicação", "Aplicacao"])
+    norma = buscar_valor(dados, ["Norma ABNT", "Norma"])
+    ret_esp = formatar_numero(buscar_valor(dados, ["Retenção", "Retencao"]), True)
+    
+    pdf.campo_form("Aplicação", aplicacao, x=10, y=y_ams, w=60)
+    pdf.campo_form("Norma ABNT", norma, x=75, y=y_ams, w=60)
+    pdf.campo_form("Retenção Esp.", ret_esp, x=140, y=y_ams, w=60, align='C')
 
-    pdf.set_y(y_ams + 20) # Espaço maior antes da tabela química
+    pdf.set_y(y_ams + 20)
 
-    # --- TABELA QUÍMICA (Essa mantém o padrão de grade pois são muitos números) ---
+    # --- QUÍMICA ---
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(190, 8, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
 
-    # Cabeçalho da Tabela
+    # Header Tabela
     pdf.set_font('Arial', 'B', 8)
     x_i = pdf.get_x()
     y_i = pdf.get_y()
@@ -143,14 +154,12 @@ def gerar_pdf_nativo(dados):
     pdf.cell(75, 5, clean_text("Balanceamento químico"), 1, 0, 'C')
     pdf.set_xy(x_i + 150, y_i)
     pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
-
     pdf.set_xy(x_i + 75, y_i + 5)
     pdf.cell(25, 5, clean_text("Resultados (%)"), 1, 0, 'C')
     pdf.cell(50, 5, clean_text("Padrões (Min - Max)"), 1, 0, 'C')
-    
     pdf.set_xy(x_i, y_i + 10)
 
-    # Dados da Tabela
+    # Dados Tabela
     pdf.set_font('Arial', '', 9)
     H_ROW = 7
 
@@ -162,72 +171,74 @@ def gerar_pdf_nativo(dados):
         pdf.cell(25, H_ROW, max_v, 1, 0, 'C')
         pdf.cell(40, H_ROW, clean_text(met), 1, 1, 'C')
 
-    linha_tab("Cromo (CrO3)", 
-              formatar_numero(dados.get("Retenção Cromo (Kg/m³)", ""), True),
-              formatar_numero(dados.get("Balanço Cromo (%)", "")),
-              "41,8", "53,2", "Metodo UFV 01")
+    # Cromo
+    cr_kg = formatar_numero(buscar_valor(dados, ["Retenção Cromo (Kg/m³)", "Retencao Cromo"]), True)
+    cr_bal = formatar_numero(buscar_valor(dados, ["Balanço Cromo (%)", "Balanco Cromo"]))
+    linha_tab("Cromo (CrO3)", cr_kg, cr_bal, "41,8", "53,2", "Metodo UFV 01")
               
-    linha_tab("Cobre (CuO)", 
-              formatar_numero(dados.get("Retenção Cobre (Kg/m³)", ""), True),
-              formatar_numero(dados.get("Balanço Cobre (%)", "")),
-              "15,2", "22,8", "")
+    # Cobre
+    cu_kg = formatar_numero(buscar_valor(dados, ["Retenção Cobre (Kg/m³)", "Retencao Cobre"]), True)
+    cu_bal = formatar_numero(buscar_valor(dados, ["Balanço Cobre (%)", "Balanco Cobre"]))
+    linha_tab("Cobre (CuO)", cu_kg, cu_bal, "15,2", "22,8", "")
               
-    linha_tab("Arsenio (As2O5)", 
-              formatar_numero(dados.get("Retenção Arsênio (Kg/m³)", ""), True),
-              formatar_numero(dados.get("Balanço Arsênio (%)", "")),
-              "27,3", "40,7", "")
+    # Arsênio
+    as_kg = formatar_numero(buscar_valor(dados, ["Retenção Arsênio (Kg/m³)", "Retencao Arsenio"]), True)
+    as_bal = formatar_numero(buscar_valor(dados, ["Balanço Arsênio (%)", "Balanco Arsenio"]))
+    linha_tab("Arsenio (As2O5)", as_kg, as_bal, "27,3", "40,7", "")
     
     # Total
     pdf.set_font('Arial', 'B', 9)
+    # Tenta várias chaves para achar o Total
+    tot_kg = formatar_numero(buscar_valor(dados, ["Soma Concentração (%)", "Soma Concentração", "Retenção Total", "Total"]), True)
+    tot_bal = formatar_numero(buscar_valor(dados, ["Balanço Total (%)", "Balanço Total", "Balanco Total"]))
+    
     pdf.cell(40, H_ROW, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
-    pdf.cell(35, H_ROW, formatar_numero(dados.get("Soma Concentração (%)", ""), True), 1, 0, 'C')
-    pdf.cell(25, H_ROW, formatar_numero(dados.get("Balanço Total (%)", "")), 1, 0, 'C')
+    pdf.cell(35, H_ROW, tot_kg, 1, 0, 'C')
+    pdf.cell(25, H_ROW, tot_bal, 1, 0, 'C')
     pdf.cell(90, H_ROW, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
     
     pdf.ln(8)
 
-    # --- PENETRAÇÃO (Estilo Formulário para a Descrição) ---
+    # --- PENETRAÇÃO ---
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
     y_pen = pdf.get_y()
 
-    # Grau e Tipo (Lado a Lado)
-    pdf.campo_form("Grau", dados.get("Grau de penetração", ""), x=10, y=y_pen, w=30, align='C')
-    pdf.campo_form("Tipo", dados.get("Descrição Grau", ""), x=45, y=y_pen, w=50, align='C')
+    grau = buscar_valor(dados, ["Grau de penetração", "Grau", "grau"])
+    tipo_grau = buscar_valor(dados, ["Descrição Grau", "Tipo Grau"])
     
-    # Descrição (Texto Longo)
-    desc = clean_text(dados.get("Descrição Penetração", ""))
+    pdf.campo_form("Grau", grau, x=10, y=y_pen, w=30, align='C')
+    pdf.campo_form("Tipo", tipo_grau, x=45, y=y_pen, w=50, align='C')
+    
+    desc = clean_text(buscar_valor(dados, ["Descrição Penetração", "Descricao Penetracao"]))
     pdf.set_xy(100, y_pen)
     pdf.set_font('Arial', '', 8)
     pdf.cell(90, 4, clean_text("Descrição"), 0, 0, 'L')
-    
     pdf.set_xy(100, y_pen + 4)
     pdf.set_font('Arial', '', 9)
-    # Caixa manual para texto longo
     pdf.multi_cell(100, 6, desc, 1, 'L')
 
     pdf.set_y(y_pen + 20)
 
-    # --- OBSERVAÇÕES E ASSINATURA ---
-    obs = clean_text(dados.get("Observação: Analista de Controle de Qualidade", ""))
+    # --- OBS ---
+    obs = clean_text(buscar_valor(dados, ["Observação: Analista de Controle de Qualidade", "Observação", "Obs"]))
     if obs:
         y_obs = pdf.get_y()
         pdf.campo_form("Observações", obs, x=10, y=y_obs, w=190, h=10)
 
-    # Rodapé Fixo
+    # Rodapé
     pdf.set_y(-35)
     pdf.set_font('Arial', '', 10)
     pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
 
     return pdf.output(dest='S').encode('latin-1')
 
-# --- CONEXÃO GOOGLE ---
+# --- GOOGLE ---
 def conectar_google_sheets():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-        client = gspread.authorize(creds)
-        return client.open(NOME_PLANILHA_GOOGLE)
+        return gspread.authorize(creds).open(NOME_PLANILHA_GOOGLE)
     except: return None
 
 def carregar_dados(aba_nome):
@@ -235,7 +246,7 @@ def carregar_dados(aba_nome):
     if sh:
         try:
             df = pd.DataFrame(sh.worksheet(aba_nome).get_all_records())
-            if not df.empty: df.columns = df.columns.str.strip()
+            if not df.empty: df.columns = df.columns.str.strip() # Remove espaços extras
             return df.astype(str)
         except: return pd.DataFrame()
     return pd.DataFrame()
@@ -246,8 +257,8 @@ def salvar_dados(df, aba_nome):
         try:
             ws = sh.worksheet(aba_nome)
             ws.clear()
-            df_salvar = df.drop(columns=["Selecionar"]) if "Selecionar" in df.columns else df
-            ws.update([df_salvar.columns.values.tolist()] + df_salvar.values.tolist())
+            df_s = df.drop(columns=["Selecionar"]) if "Selecionar" in df.columns else df
+            ws.update([df_s.columns.values.tolist()] + df_s.values.tolist())
             st.toast("Salvo!", icon="✅")
         except: st.error("Erro Salvar")
 
@@ -277,6 +288,15 @@ if check_login():
     tipo = st.session_state['tipo']
     st.sidebar.info(f"👤 {st.session_state['user']} ({tipo})")
     if st.sidebar.button("Sair"): st.session_state['logado'] = False; st.rerun()
+
+    # --- DEBUGGER (USE ISTO SE OS CAMPOS CONTINUAREM VAZIOS) ---
+    with st.sidebar.expander("🕵️ Ver Nomes das Colunas"):
+        df_debug = carregar_dados("Madeira")
+        if not df_debug.empty:
+            st.write("Colunas encontradas:")
+            st.write(list(df_debug.columns))
+            st.write("Primeira linha de dados:")
+            st.write(df_debug.iloc[0].to_dict())
 
     st.title("🌲 Sistema Controle UFV")
     menu = st.sidebar.radio("Menu", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
