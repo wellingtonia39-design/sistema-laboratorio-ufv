@@ -11,7 +11,7 @@ from datetime import datetime
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
-# --- CLASSE DO PDF (LAYOUT RÉPLICA) ---
+# --- CLASSE DO PDF ---
 class RelatorioPDF(FPDF):
     def header(self):
         # Logos
@@ -54,223 +54,215 @@ def clean_text(text):
     if pd.isna(text): return ""
     return str(text).encode('latin-1', 'replace').decode('latin-1')
 
+# --- GERADOR PDF (LAYOUT TABULAR) ---
 def gerar_pdf_nativo(dados):
     pdf = RelatorioPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # --- CABEÇALHO DE DADOS (Topo) ---
-    pdf.set_font('Arial', 'B', 10)
-    
-    # Coluna Esquerda (Data Entrada)
-    pdf.set_xy(10, 35)
-    pdf.cell(40, 5, "Data de Entrada", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(40, 5, formatar_data(dados.get("Data de entrada", "")), 0, 1)
+    # Altura padrão das linhas
+    H_LINE = 7 
 
-    # Coluna Direita (ID e Emissão)
-    pdf.set_xy(140, 35)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(50, 5, "Número ID", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(50, 5, clean_text(dados.get("Código UFV", "")), 0, 1)
+    # --- TABELA DE TOPO (ID e Datas) ---
+    pdf.set_y(40)
+    pdf.set_font('Arial', 'B', 9)
     
-    pdf.set_xy(140, 48)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(50, 5, "Data de Emissão", 0, 1)
-    pdf.set_font('Arial', '', 10)
+    # Linha 1: ID (Direita)
+    id_rel = clean_text(dados.get("Código UFV", ""))
+    pdf.set_x(130) # Move para direita
+    pdf.cell(30, H_LINE, "Número ID:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(40, H_LINE, id_rel, 1, 1, 'C')
+    
+    # Linha 2: Datas (Esquerda e Direita)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Data de Entrada:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    dt_ent = formatar_data(dados.get("Data de entrada", ""))
+    pdf.cell(40, H_LINE, dt_ent, 1, 0, 'C')
+    
+    # Espaço no meio
+    pdf.cell(50, H_LINE, "", 0, 0) 
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Data Emissão:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    # Tenta pegar Data Registro, se não tiver, pega Fim Analise
     dt_emissao = formatar_data(dados.get("Data de Registro", "") if dados.get("Data de Registro") else dados.get("Fim da análise"))
-    pdf.cell(50, 5, dt_emissao, 0, 1)
-
-    pdf.ln(10) # Espaço
-    pdf.set_y(60) # Força posição Y para começar o corpo
-
-    # --- CLIENTE ---
-    # Linha 1: Cliente
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(190, 5, "Cliente", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(190, 6, clean_text(dados.get("Nome do Cliente", "")), 0, 1)
-    pdf.ln(2)
-
-    # Linha 2: Cidade/UF e E-mail
-    y_start = pdf.get_y()
-    
-    # Cidade
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(95, 5, "Cidade/UF", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    cidade = clean_text(dados.get("Cidade", ""))
-    estado = clean_text(dados.get("Estado", ""))
-    pdf.cell(95, 6, f"{cidade}/{estado}", 0, 0)
-    
-    # E-mail (Lado direito)
-    pdf.set_xy(105, y_start)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(95, 5, "E-mail", 0, 1)
-    pdf.set_xy(105, y_start + 5)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(95, 6, clean_text(dados.get("E-mail", "")), 0, 1)
+    pdf.cell(40, H_LINE, dt_emissao, 1, 1, 'C')
     
     pdf.ln(5)
 
-    # --- IDENTIFICAÇÃO DA AMOSTRA ---
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(190, 8, clean_text("Identificação da amostra"), 0, 1)
+    # --- TABELA DADOS DO CLIENTE ---
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(190, H_LINE, "DADOS DO CLIENTE", 1, 1, 'L', fill=False) # Cabeçalho cinza se quiser: fill=True e set_fill_color
     
-    # Amostra
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(190, 5, "Amostra", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(190, 6, clean_text(dados.get("Indentificação de Amostra do cliente", "")), 0, 1)
-    pdf.ln(2)
-
-    # Linha: Madeira | Produto
-    y_amostra = pdf.get_y()
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(95, 5, "Madeira", 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(95, 6, clean_text(dados.get("Madeira", "")), 0, 0)
-
-    pdf.set_xy(105, y_amostra)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(95, 5, "Produto", 0, 1)
-    pdf.set_xy(105, y_amostra + 5)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(95, 6, clean_text(dados.get("Produto utilizado", "")), 0, 1)
-    pdf.ln(2)
-
-    # Linha: Aplicação | Norma | Retenção
-    y_app = pdf.get_y()
+    # Linha Cliente
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Cliente:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(160, H_LINE, clean_text(dados.get("Nome do Cliente", "")), 1, 1, 'L')
     
-    # Aplicação
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(63, 5, clean_text("Aplicação"), 0, 1)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(63, 6, clean_text(dados.get("Aplicação", "")), 0, 0)
-
-    # Norma
-    pdf.set_xy(73, y_app)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(63, 5, "Norma ABNT", 0, 1)
-    pdf.set_xy(73, y_app + 5)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(63, 6, clean_text(dados.get("Norma ABNT", "")), 0, 0)
-
-    # Retenção Esp.
-    pdf.set_xy(136, y_app)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(54, 5, clean_text("Retenção"), 0, 1)
-    pdf.set_xy(136, y_app + 5)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(54, 6, formatar_numero(dados.get("Retenção", ""), True), 0, 1)
+    # Linha Cidade / Email
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Cidade/UF:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    cid = clean_text(dados.get("Cidade", ""))
+    uf = clean_text(dados.get("Estado", ""))
+    pdf.cell(65, H_LINE, f"{cid}/{uf}", 1, 0, 'L')
     
-    pdf.ln(8)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "E-mail:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(65, H_LINE, clean_text(dados.get("E-mail", "")), 1, 1, 'L')
+    
+    pdf.ln(5)
 
-    # --- TABELA DE RETENÇÃO (Cópia Visual) ---
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(190, 8, clean_text("Resultados de Retenção"), 0, 1)
+    # --- TABELA IDENTIFICAÇÃO DA AMOSTRA ---
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(190, H_LINE, clean_text("IDENTIFICAÇÃO DA AMOSTRA"), 1, 1, 'L')
+    
+    # Linha Amostra
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Ref. Cliente:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(160, H_LINE, clean_text(dados.get("Indentificação de Amostra do cliente", "")), 1, 1, 'L')
+    
+    # Linha Madeira / Produto
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Madeira:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(65, H_LINE, clean_text(dados.get("Madeira", "")), 1, 0, 'L')
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(30, H_LINE, "Produto:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(65, H_LINE, clean_text(dados.get("Produto utilizado", "")), 1, 1, 'L')
 
-    # Cabeçalho Complexo
+    # Linha Aplicação / Norma / Retenção
+    # Vamos dividir 190mm por 3 blocos (aprox)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(20, H_LINE, clean_text("Aplicação:"), 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(43, H_LINE, clean_text(dados.get("Aplicação", "")), 1, 0, 'L')
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(25, H_LINE, "Norma ABNT:", 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(38, H_LINE, clean_text(dados.get("Norma ABNT", "")), 1, 0, 'L')
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(26, H_LINE, clean_text("Retenção Esp.:"), 1, 0, 'L')
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(38, H_LINE, formatar_numero(dados.get("Retenção", ""), True), 1, 1, 'C')
+    
+    pdf.ln(5)
+
+    # --- TABELA DE RESULTADOS QUÍMICOS ---
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(190, H_LINE, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
+
+    # Cabeçalho
     pdf.set_font('Arial', 'B', 8)
-    # Linha 1 dos headers
-    x_init = pdf.get_x()
-    y_init = pdf.get_y()
+    # Linha 1 Headers
+    x_i = pdf.get_x()
+    y_i = pdf.get_y()
     
     pdf.cell(40, 10, "Ingredientes ativos", 1, 0, 'C')
-    pdf.cell(35, 10, clean_text("Distribuição dos\nteores de i.a (kg/m3)"), 1, 0, 'C') # Quebra linha manual se precisar
+    pdf.cell(35, 10, clean_text("Distribuição dos\nteores de i.a (kg/m3)"), 1, 0, 'C')
     
-    # Bloco Balanceamento (Merged)
+    # Bloco Balanceamento
     pdf.cell(75, 5, clean_text("Balanceamento químico"), 1, 0, 'C')
     
-    pdf.set_xy(x_init + 150, y_init)
+    # Metodo (Lado direito)
+    pdf.set_xy(x_i + 150, y_i)
     pdf.cell(40, 10, clean_text("Método utilizado\nno ensaio"), 1, 0, 'C')
 
-    # Linha 2 dos headers (Sub-colunas)
-    pdf.set_xy(x_init + 75, y_init + 5)
+    # Linha 2 Headers
+    pdf.set_xy(x_i + 75, y_i + 5)
     pdf.cell(25, 5, clean_text("Resultados (%)"), 1, 0, 'C')
     pdf.cell(50, 5, clean_text("Padrões (Min - Max)"), 1, 0, 'C')
     
-    pdf.set_xy(x_init, y_init + 10) # Volta para o começo da próxima linha
+    pdf.set_xy(x_i, y_i + 10) # Próxima linha de dados
 
-    # DADOS DA TABELA
+    # DADOS
     pdf.set_font('Arial', '', 9)
-    altura_linha = 7
 
-    def linha_tabela(nome, val_kg, val_pct, min_v, max_v, metodo=""):
-        pdf.cell(40, altura_linha, clean_text(nome), 1, 0, 'L')
-        pdf.cell(35, altura_linha, val_kg, 1, 0, 'C')
-        pdf.cell(25, altura_linha, val_pct, 1, 0, 'C')
-        pdf.cell(25, altura_linha, min_v, 1, 0, 'C') # Min
-        pdf.cell(25, altura_linha, max_v, 1, 0, 'C') # Max
-        pdf.cell(40, altura_linha, clean_text(metodo), 1, 1, 'C')
+    def linha_tab(nome, v_kg, v_pct, min_v, max_v, met=""):
+        pdf.cell(40, H_LINE, clean_text(nome), 1, 0, 'L')
+        pdf.cell(35, H_LINE, v_kg, 1, 0, 'C')
+        pdf.cell(25, H_LINE, v_pct, 1, 0, 'C')
+        pdf.cell(25, H_LINE, min_v, 1, 0, 'C')
+        pdf.cell(25, H_LINE, max_v, 1, 0, 'C')
+        pdf.cell(40, H_LINE, clean_text(met), 1, 1, 'C')
 
-    # Cromo
-    linha_tabela("Teor de CrO3 (Cromo)", 
-                 formatar_numero(dados.get("Retenção Cromo (Kg/m³)", ""), True),
-                 formatar_numero(dados.get("Balanço Cromo (%)", "")),
-                 "41,8", "53,2", "Metodo UFV 01")
-    # Cobre
-    linha_tabela("Teor de CuO (Cobre)", 
-                 formatar_numero(dados.get("Retenção Cobre (Kg/m³)", ""), True),
-                 formatar_numero(dados.get("Balanço Cobre (%)", "")),
-                 "15,2", "22,8", "")
-    # Arsênio
-    linha_tabela("Teor de As2O5 (Arsênio)", 
-                 formatar_numero(dados.get("Retenção Arsênio (Kg/m³)", ""), True),
-                 formatar_numero(dados.get("Balanço Arsênio (%)", "")),
-                 "27,3", "40,7", "")
+    linha_tab("Teor de CrO3 (Cromo)", 
+              formatar_numero(dados.get("Retenção Cromo (Kg/m³)", ""), True),
+              formatar_numero(dados.get("Balanço Cromo (%)", "")),
+              "41,8", "53,2", "Metodo UFV 01")
+              
+    linha_tab("Teor de CuO (Cobre)", 
+              formatar_numero(dados.get("Retenção Cobre (Kg/m³)", ""), True),
+              formatar_numero(dados.get("Balanço Cobre (%)", "")),
+              "15,2", "22,8", "")
+              
+    linha_tab("Teor de As2O5 (Arsênio)", 
+              formatar_numero(dados.get("Retenção Arsênio (Kg/m³)", ""), True),
+              formatar_numero(dados.get("Balanço Arsênio (%)", "")),
+              "27,3", "40,7", "")
     
-    # Linha Final (Retenção Total)
+    # Total
     pdf.set_font('Arial', 'B', 9)
-    val_tot = formatar_numero(dados.get("Soma Concentração (%)", ""), True)
-    bal_tot = formatar_numero(dados.get("Balanço Total (%)", "")) # Geralmente 100 ou próximo
+    pdf.cell(40, H_LINE, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
+    pdf.cell(35, H_LINE, formatar_numero(dados.get("Soma Concentração (%)", ""), True), 1, 0, 'C')
+    pdf.cell(25, H_LINE, formatar_numero(dados.get("Balanço Total (%)", "")), 1, 0, 'C')
+    pdf.cell(90, H_LINE, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
     
-    pdf.cell(40, altura_linha, clean_text("Retenção"), 1, 0, 'L')
-    pdf.cell(35, altura_linha, val_tot, 1, 0, 'C')
-    pdf.cell(25, altura_linha, bal_tot, 1, 0, 'C')
-    pdf.cell(90, altura_linha, clean_text("Nota: os resultados restringem-se as amostras"), 1, 1, 'C')
-
     pdf.ln(5)
 
-    # --- RESULTADOS DE PENETRAÇÃO ---
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(190, 8, clean_text("Resultados de Penetração"), 0, 1)
-
-    # Header Tabela Penetração
+    # --- TABELA PENETRAÇÃO ---
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(190, H_LINE, clean_text("RESULTADOS DE PENETRAÇÃO"), 1, 1, 'C')
+    
     pdf.set_font('Arial', 'B', 9)
-    pdf.cell(20, 6, "Grau", 1, 0, 'C')
-    pdf.cell(50, 6, "Tipo", 1, 0, 'L')
-    pdf.cell(120, 6, clean_text("Descrição da penetração"), 1, 1, 'L')
-
-    # Dados
+    pdf.cell(20, H_LINE, "Grau", 1, 0, 'C')
+    pdf.cell(50, H_LINE, "Tipo", 1, 0, 'L')
+    pdf.cell(120, H_LINE, clean_text("Descrição"), 1, 1, 'L')
+    
     pdf.set_font('Arial', '', 9)
-    grau = clean_text(dados.get("Grau de penetração", ""))
-    tipo_pen = clean_text(dados.get("Descrição Grau", ""))
-    desc_pen = clean_text(dados.get("Descrição Penetração", ""))
-
-    pdf.cell(20, 12, grau, 1, 0, 'C')
-    pdf.cell(50, 12, tipo_pen, 1, 0, 'L')
-    # Multi-cell para descrição longa
-    x_desc = pdf.get_x()
-    y_desc = pdf.get_y()
-    pdf.multi_cell(120, 6, desc_pen, 1, 'L')
-    # Desenha borda manual no resto da linha se multi_cell quebrar
-    pdf.set_xy(10, y_desc + 12) # Avança para depois da tabela
-
+    # Precisamos calcular a altura para a descrição longa
+    desc = clean_text(dados.get("Descrição Penetração", ""))
+    
+    # Altura dinâmica (se o texto for longo)
+    # Truque: Usamos multi_cell apenas na ultima coluna, mas precisamos saber a altura Y
+    x_start = pdf.get_x()
+    y_start = pdf.get_y()
+    
+    # Grau
+    pdf.cell(20, 12, clean_text(dados.get("Grau de penetração", "")), 1, 0, 'C')
+    # Tipo
+    pdf.cell(50, 12, clean_text(dados.get("Descrição Grau", "")), 1, 0, 'L')
+    
+    # Descrição (MultiCell dentro de uma "célula" manual)
+    pdf.set_xy(x_start + 70, y_start)
+    pdf.multi_cell(120, 6, desc, 1, 'L')
+    
+    # Desenha a borda da caixa da descrição manualmente para cobrir a altura total (12)
+    pdf.rect(x_start + 70, y_start, 120, 12)
+    
+    pdf.set_y(y_start + 12) # Avança para baixo
     pdf.ln(5)
 
     # --- OBSERVAÇÕES ---
     obs = clean_text(dados.get("Observação: Analista de Controle de Qualidade", ""))
     if obs:
         pdf.set_font('Arial', 'B', 10)
-        pdf.cell(190, 6, clean_text("Observação: Analista de Controle de Qualidade"), 0, 1)
-        pdf.set_font('Arial', '', 10)
-        pdf.multi_cell(190, 5, obs, 0, 'L')
-    
-    # --- ASSINATURA ---
-    # Posiciona no rodapé da página (aprox 4cm do fim)
-    pdf.set_y(-40) 
+        pdf.cell(190, H_LINE, "Observacoes:", 1, 1, 'L') # Header Obs
+        pdf.set_font('Arial', '', 9)
+        pdf.multi_cell(190, 6, obs, 1, 'L') # Conteúdo Obs com borda
+
+    # --- ASSINATURAS ---
+    pdf.set_y(-40)
     pdf.set_font('Arial', '', 10)
     pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
 
@@ -353,7 +345,7 @@ if check_login():
             sel = df_ed[df_ed["Selecionar"] == True]
             if st.button("📄 GERAR RELATÓRIO PDF", type="primary", use_container_width=True):
                 if not sel.empty:
-                    with st.spinner("Gerando..."):
+                    with st.spinner("Gerando PDF..."):
                         linha = sel.iloc[0]
                         nome = f"{linha.get('Código UFV', 'Relatorio')}.pdf"
                         try:
@@ -361,7 +353,7 @@ if check_login():
                             st.download_button(f"⬇️ BAIXAR {nome}", pdf, nome, "application/pdf")
                         except Exception as e: st.error(f"Erro: {e}")
                 else: st.warning("Selecione uma amostra.")
-    
+
     elif menu == "⚗️ Solução Preservativa":
         st.subheader("Solução")
         df = carregar_dados("Solucao")
