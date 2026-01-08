@@ -8,23 +8,16 @@ import os
 import subprocess
 import shutil
 from datetime import datetime
+import time
 
-# --- CONFIGURAÇÃO ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
-# --- DIAGNÓSTICO AVANÇADO ---
-st.sidebar.title("🔧 Diagnóstico Técnico")
-# Tenta achar o executável com vários nomes possíveis
+# --- DIAGNÓSTICO PDF ---
 lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
 
-if lo_bin:
-    st.sidebar.success(f"✅ Conversor Ativo!\nBinário: {lo_bin}")
-else:
-    st.sidebar.error("❌ Conversor NÃO encontrado.")
-    st.sidebar.info("O arquivo packages.txt no GitHub deve conter: libreoffice, default-jre")
-
-# --- MAPEAMENTO ---
+# --- MAPEAMENTO WORD ---
 DE_PARA_WORD = {
     "Código UFV": "«Código_UFV»",
     "Data de entrada": "«Data_de_entrada»",
@@ -53,7 +46,6 @@ DE_PARA_WORD = {
     "Descrição Penetração": "«Descrição_Penetração_»",
     "Observação: Analista de Controle de Qualidade": "«Observação»"
 }
-
 CAMPOS_NUMERICOS = ["Retenção", "Retenção Cromo (Kg/m³)", "Balanço Cromo (%)", "Retenção Cobre (Kg/m³)", "Balanço Cobre (%)", "Retenção Arsênio (Kg/m³)", "Balanço Arsênio (%)", "Soma Concentração (%)", "Balanço Total (%)"]
 CAMPOS_DATA = ["Data de entrada", "Fim da análise", "Data de Registro"]
 
@@ -78,6 +70,8 @@ def carregar_dados(aba_nome):
             ws = sh.worksheet(aba_nome)
             df = pd.DataFrame(ws.get_all_records())
             if not df.empty: df.columns = df.columns.str.strip()
+            # Converte tudo para string para evitar erro de edição no Streamlit
+            df = df.astype(str)
             return df
         except: return pd.DataFrame()
     return pd.DataFrame()
@@ -95,9 +89,9 @@ def salvar_dados(df, aba_nome):
 
 def formatar_numero_br(valor):
     try:
-        if valor == "" or valor is None: return ""
-        if isinstance(valor, str): valor = valor.replace(",", ".")
-        return "{:,.2f}".format(float(valor)).replace(",", "X").replace(".", ",").replace("X", ".")
+        if not valor: return ""
+        v = str(valor).replace(",", ".")
+        return "{:,.2f}".format(float(v)).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(valor)
 
 def formatar_data_br(valor):
@@ -109,44 +103,16 @@ def formatar_data_br(valor):
     return v
 
 def converter_docx_para_pdf(docx_bytes):
-    # Tenta encontrar o comando certo
-    cmd_exec = shutil.which("libreoffice") or shutil.which("soffice")
-    
-    if not cmd_exec:
-        return None, "O programa LibreOffice não foi encontrado no servidor."
-
+    if not lo_bin: return None, "LibreOffice não instalado."
     try:
-        # Salva temporário
         with open("temp.docx", "wb") as f: f.write(docx_bytes.getvalue())
-        
-        # Comando Otimizado para Servidor (headless, sem logo, sem user profile)
-        comando = [
-            cmd_exec, 
-            '--headless', 
-            '--convert-to', 'pdf', 
-            '--outdir', '.', 
-            '--nologo', 
-            '--nofirststartwizard',
-            'temp.docx'
-        ]
-        
-        # Executa com timeout maior
-        processo = subprocess.run(
-            comando,
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            timeout=120 # Aumentei para 2 minutos
-        )
-        
+        cmd = [lo_bin, '--headless', '--convert-to', 'pdf', '--outdir', '.', '--nologo', '--nofirststartwizard', 'temp.docx']
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         if os.path.exists("temp.pdf"):
             with open("temp.pdf", "rb") as f: pdf = f.read()
-            # Limpeza
-            if os.path.exists("temp.docx"): os.remove("temp.docx")
-            if os.path.exists("temp.pdf"): os.remove("temp.pdf")
+            os.remove("temp.docx"); os.remove("temp.pdf")
             return pdf, None
-        else:
-            return None, f"Falha na conversão.\nSaída: {processo.stdout.decode()}\nErro: {processo.stderr.decode()}"
-            
+        return None, "Erro na conversão."
     except Exception as e: return None, str(e)
 
 def preencher_modelo_word(modelo_upload, dados_linha):
@@ -181,55 +147,137 @@ def preencher_modelo_word(modelo_upload, dados_linha):
     bio.seek(0)
     return bio
 
-# --- INTERFACE ---
-st.title("🌲 Sistema UFV")
-menu = st.sidebar.radio("Ir para:", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
-st.sidebar.markdown("---")
-arquivo_modelo = st.sidebar.file_uploader("1. Carregue o Modelo .docx aqui", type=["docx"])
-
-if menu == "🪵 Madeira Tratada":
-    st.header("Análise de Madeira Tratada")
-    df = carregar_dados("Madeira")
+# --- SISTEMA DE LOGIN ---
+def check_login():
+    if 'logado' not in st.session_state: st.session_state['logado'] = False
+    if 'tipo_usuario' not in st.session_state: st.session_state['tipo_usuario'] = None
     
-    if not df.empty:
-        if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
+    if st.session_state['logado']: return True
+
+    st.markdown("<h1 style='text-align: center;'>🔐 Acesso Restrito UFV</h1>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        usuario = st.text_input("Usuário")
+        senha = st.text_input("Senha", type="password")
         
-        df_ed = st.data_editor(
-            df, num_rows="dynamic", use_container_width=True, height=400,
-            column_config={"Selecionar": st.column_config.CheckboxColumn("Selecionar?", width="small")}
-        )
+        if st.button("Entrar", type="primary", use_container_width=True):
+            sh = conectar_google_sheets()
+            try:
+                # Busca usuários na aba "Usuarios"
+                ws = sh.worksheet("Usuarios")
+                dados = ws.get_all_records()
+                df_users = pd.DataFrame(dados)
+                
+                # Verifica credenciais
+                user_encontrado = df_users[
+                    (df_users['Usuario'].astype(str) == usuario) & 
+                    (df_users['Senha'].astype(str) == senha)
+                ]
+                
+                if not user_encontrado.empty:
+                    st.session_state['logado'] = True
+                    st.session_state['tipo_usuario'] = user_encontrado.iloc[0]['Tipo']
+                    st.session_state['nome_usuario'] = usuario
+                    st.toast(f"Bem-vindo, {usuario}!", icon="👋")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
+            except Exception as e:
+                st.error(f"Erro ao conectar na base de usuários: {e}")
+                st.info("Verifique se a aba 'Usuarios' foi criada na planilha.")
+    return False
+
+# ===============================================
+# APLICAÇÃO PRINCIPAL
+# ===============================================
+
+if check_login():
+    # --- BARRA LATERAL ---
+    tipo_user = st.session_state['tipo_usuario']
+    st.sidebar.markdown(f"👤 **{st.session_state['nome_usuario']}** ({tipo_user})")
+    
+    if st.sidebar.button("Sair / Logout"):
+        st.session_state['logado'] = False
+        st.rerun()
         
-        if st.button("💾 SALVAR DADOS NO GOOGLE SHEETS", type="primary", use_container_width=True):
-            salvar_dados(df_ed, "Madeira"); st.rerun()
+    st.sidebar.divider()
+    menu = st.sidebar.radio("Navegação:", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
+    st.sidebar.markdown("---")
+    arquivo_modelo = st.sidebar.file_uploader("Modelo de Relatório (.docx)", type=["docx"])
+
+    st.title("🌲 Sistema Controle UFV")
+
+    # --- ABA MADEIRA ---
+    if menu == "🪵 Madeira Tratada":
+        st.header("Análise de Madeira Tratada")
+        df = carregar_dados("Madeira")
+        
+        if not df.empty:
+            if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
             
-        st.divider()
-        st.markdown("### 🖨️ Relatórios")
-        c1, c2 = st.columns(2)
-        
-        # Botão Word
-        if c1.button("📝 Gerar DOCX (Garantido)", use_container_width=True):
-            sel = df_ed[df_ed["Selecionar"] == True]
-            if not sel.empty and arquivo_modelo:
-                bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
-                st.download_button("⬇️ Baixar DOCX", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            else: st.error("Selecione uma linha e carregue o modelo.")
-
-        # Botão PDF
-        if c2.button("📄 Gerar PDF (Experimental)", use_container_width=True):
-            sel = df_ed[df_ed["Selecionar"] == True]
-            if sel.empty: st.error("Selecione uma linha!")
-            elif not arquivo_modelo: st.error("Carregue o modelo!")
+            # --- LÓGICA DE PERMISSÃO ---
+            if tipo_user == "LPM":
+                # LPM: Edita tudo
+                st.info("🛠️ Modo Editor: Você pode alterar dados e salvar.")
+                df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True, height=400,
+                                     column_config={"Selecionar": st.column_config.CheckboxColumn("Selecionar?", width="small")})
+                
+                if st.button("💾 SALVAR ALTERAÇÕES", type="primary"):
+                    salvar_dados(df_ed, "Madeira"); st.rerun()
+            
             else:
-                with st.spinner("Gerando PDF (Pode demorar até 1 min)..."):
-                    bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
-                    pdf, erro = converter_docx_para_pdf(bio)
-                    
-                    if pdf:
-                        st.success("Sucesso!")
-                        st.download_button("⬇️ Baixar PDF", pdf, "Relatorio.pdf", "application/pdf")
-                    else:
-                        st.error("Erro na conversão PDF.")
-                        st.code(erro) # Mostre esse erro para mim!
+                # Montana: Só seleciona (O resto fica travado)
+                st.warning("👀 Modo Visualizador: Edição bloqueada.")
+                
+                # Configura todas as colunas para disabled=True, menos "Selecionar"
+                col_config = {"Selecionar": st.column_config.CheckboxColumn("Selecionar?", width="small", disabled=False)}
+                for col in df.columns:
+                    if col != "Selecionar":
+                        col_config[col] = st.column_config.Column(disabled=True) # Trava coluna
+                
+                df_ed = st.data_editor(df, num_rows="fixed", use_container_width=True, height=400, column_config=col_config)
+                # Sem botão salvar para Montana
 
-elif menu == "⚗️ Solução Preservativa":
-    st.info("Mude para Madeira"); df=carregar_dados("Solucao"); st.data_editor(df)
+            st.divider()
+            
+            # ÁREA DE RELATÓRIOS (Visível para ambos)
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📝 Gerar DOCX", use_container_width=True):
+                    sel = df_ed[df_ed["Selecionar"] == True]
+                    if not sel.empty and arquivo_modelo:
+                        bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
+                        st.download_button("⬇️ Baixar DOCX", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                    else: st.error("Selecione e carregue o modelo.")
+
+            with col2:
+                if st.button("📄 Gerar PDF", use_container_width=True):
+                    sel = df_ed[df_ed["Selecionar"] == True]
+                    if not sel.empty and arquivo_modelo:
+                        with st.spinner("Gerando PDF..."):
+                            bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
+                            pdf, erro = converter_docx_para_pdf(bio)
+                            if pdf: st.download_button("⬇️ Baixar PDF", pdf, "Relatorio.pdf", "application/pdf")
+                            else: st.error(f"Erro: {erro}")
+                    else: st.error("Selecione e carregue o modelo.")
+
+    # --- ABA SOLUÇÃO ---
+    elif menu == "⚗️ Solução Preservativa":
+        st.header("Solução Preservativa")
+        df_sol = carregar_dados("Solucao")
+        if not df_sol.empty:
+            if tipo_user == "LPM":
+                df_sol_ed = st.data_editor(df_sol, num_rows="dynamic", use_container_width=True)
+                if st.button("Salvar Solução"): salvar_dados(df_sol_ed, "Solucao"); st.rerun()
+            else:
+                st.dataframe(df_sol, use_container_width=True) # Apenas visualização para Montana
+
+    # --- ABA DASHBOARD ---
+    elif menu == "📊 Dashboard":
+        st.header("Dashboard Gerencial")
+        df_m = carregar_dados("Madeira")
+        if not df_m.empty and 'Nome do Cliente' in df_m.columns:
+            import plotly.express as px
+            st.plotly_chart(px.bar(df_m['Nome do Cliente'].value_counts().reset_index(), x='Nome do Cliente', y='count'))
