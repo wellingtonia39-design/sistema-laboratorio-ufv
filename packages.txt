@@ -1,2 +1,4 @@
 libreoffice
 default-jre
+java-common
+libgoogle-perftools4
