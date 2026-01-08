@@ -9,20 +9,20 @@ import subprocess
 import shutil
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
-
-# --- NOME DA PLANILHA ---
 NOME_PLANILHA_GOOGLE = "UFV_Laboratorio_DB"
 
-# --- DIAGNÓSTICO LIBREOFFICE (Topo Lateral) ---
-st.sidebar.title("🔧 Status PDF")
-lo_path = shutil.which("libreoffice")
-if lo_path:
-    st.sidebar.success("✅ Conversor PDF Ativo")
+# --- DIAGNÓSTICO AVANÇADO ---
+st.sidebar.title("🔧 Diagnóstico Técnico")
+# Tenta achar o executável com vários nomes possíveis
+lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
+
+if lo_bin:
+    st.sidebar.success(f"✅ Conversor Ativo!\nBinário: {lo_bin}")
 else:
-    st.sidebar.error("❌ Conversor PDF Inativo")
-    st.sidebar.info("Crie o arquivo packages.txt com 'libreoffice' no GitHub.")
+    st.sidebar.error("❌ Conversor NÃO encontrado.")
+    st.sidebar.info("O arquivo packages.txt no GitHub deve conter: libreoffice, default-jre")
 
 # --- MAPEAMENTO ---
 DE_PARA_WORD = {
@@ -109,15 +109,44 @@ def formatar_data_br(valor):
     return v
 
 def converter_docx_para_pdf(docx_bytes):
+    # Tenta encontrar o comando certo
+    cmd_exec = shutil.which("libreoffice") or shutil.which("soffice")
+    
+    if not cmd_exec:
+        return None, "O programa LibreOffice não foi encontrado no servidor."
+
     try:
+        # Salva temporário
         with open("temp.docx", "wb") as f: f.write(docx_bytes.getvalue())
-        cmd = ['libreoffice', '--headless', '--convert-to', 'pdf', 'temp.docx', '--outdir', '.']
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        
+        # Comando Otimizado para Servidor (headless, sem logo, sem user profile)
+        comando = [
+            cmd_exec, 
+            '--headless', 
+            '--convert-to', 'pdf', 
+            '--outdir', '.', 
+            '--nologo', 
+            '--nofirststartwizard',
+            'temp.docx'
+        ]
+        
+        # Executa com timeout maior
+        processo = subprocess.run(
+            comando,
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            timeout=120 # Aumentei para 2 minutos
+        )
+        
         if os.path.exists("temp.pdf"):
             with open("temp.pdf", "rb") as f: pdf = f.read()
-            os.remove("temp.docx"); os.remove("temp.pdf")
+            # Limpeza
+            if os.path.exists("temp.docx"): os.remove("temp.docx")
+            if os.path.exists("temp.pdf"): os.remove("temp.pdf")
             return pdf, None
-        return None, "Erro: Arquivo PDF não gerado."
+        else:
+            return None, f"Falha na conversão.\nSaída: {processo.stdout.decode()}\nErro: {processo.stderr.decode()}"
+            
     except Exception as e: return None, str(e)
 
 def preencher_modelo_word(modelo_upload, dados_linha):
@@ -155,9 +184,9 @@ def preencher_modelo_word(modelo_upload, dados_linha):
 # --- INTERFACE ---
 st.title("🌲 Sistema UFV")
 menu = st.sidebar.radio("Ir para:", ["🪵 Madeira Tratada", "⚗️ Solução Preservativa", "📊 Dashboard"])
-arquivo_modelo = st.sidebar.file_uploader("Carregar Modelo (.docx)", type=["docx"])
+st.sidebar.markdown("---")
+arquivo_modelo = st.sidebar.file_uploader("1. Carregue o Modelo .docx aqui", type=["docx"])
 
-# --- ABA MADEIRA ---
 if menu == "🪵 Madeira Tratada":
     st.header("Análise de Madeira Tratada")
     df = carregar_dados("Madeira")
@@ -165,75 +194,42 @@ if menu == "🪵 Madeira Tratada":
     if not df.empty:
         if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
         
-        # TABELA
         df_ed = st.data_editor(
-            df, 
-            num_rows="dynamic", 
-            use_container_width=True, 
-            height=400,
+            df, num_rows="dynamic", use_container_width=True, height=400,
             column_config={"Selecionar": st.column_config.CheckboxColumn("Selecionar?", width="small")}
         )
         
-        # BOTÃO SALVAR (Separado para evitar confusão)
         if st.button("💾 SALVAR DADOS NO GOOGLE SHEETS", type="primary", use_container_width=True):
-            salvar_dados(df_ed, "Madeira")
-            st.rerun()
+            salvar_dados(df_ed, "Madeira"); st.rerun()
             
         st.divider()
-        st.markdown("### 🖨️ Área de Impressão")
+        st.markdown("### 🖨️ Relatórios")
+        c1, c2 = st.columns(2)
         
-        # LAYOUT DE BOTÕES LADO A LADO
-        col_docx, col_pdf = st.columns([1, 1])
-        
-        # 1. BOTÃO DOCX
-        with col_docx:
-            st.markdown("##### Opção 1: Word")
-            if st.button("📝 Gerar Relatórios DOCX", use_container_width=True):
-                selecionados = df_ed[df_ed["Selecionar"] == True]
-                if selecionados.empty:
-                    st.error("⚠️ Selecione pelo menos uma linha na tabela acima.")
-                elif not arquivo_modelo:
-                    st.error("⚠️ Carregue o modelo .docx na barra lateral.")
-                else:
-                    if len(selecionados) == 1:
-                        bio = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
-                        st.download_button("⬇️ Baixar DOCX Agora", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dw_docx")
-                    else:
-                        st.info("Para baixar vários, use a versão ZIP (não ativa neste botão).")
+        # Botão Word
+        if c1.button("📝 Gerar DOCX (Garantido)", use_container_width=True):
+            sel = df_ed[df_ed["Selecionar"] == True]
+            if not sel.empty and arquivo_modelo:
+                bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
+                st.download_button("⬇️ Baixar DOCX", bio, "Relatorio.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            else: st.error("Selecione uma linha e carregue o modelo.")
 
-        # 2. BOTÃO PDF
-        with col_pdf:
-            st.markdown("##### Opção 2: PDF")
-            # Este botão aparece SEMPRE. Não tem IF escondendo ele.
-            if st.button("📄 Gerar Relatórios PDF", use_container_width=True):
-                selecionados = df_ed[df_ed["Selecionar"] == True]
-                
-                # Validações
-                if selecionados.empty:
-                    st.error("⚠️ Selecione uma linha na tabela acima!")
-                elif not arquivo_modelo:
-                    st.error("⚠️ Carregue o modelo .docx na barra lateral!")
-                else:
-                    # Processo de Geração
-                    with st.spinner("⏳ Convertendo para PDF..."):
-                        # Passo 1: Gera Word
-                        bio_docx = preencher_modelo_word(arquivo_modelo, selecionados.iloc[0])
-                        
-                        # Passo 2: Converte
-                        pdf_bytes, erro = converter_docx_para_pdf(bio_docx)
-                        
-                        if pdf_bytes:
-                            st.success("PDF Gerado!")
-                            st.download_button("⬇️ Baixar PDF Agora", pdf_bytes, "Relatorio.pdf", "application/pdf", key="dw_pdf")
-                        else:
-                            st.error("❌ Falha na conversão.")
-                            st.code(f"Erro técnico: {erro}")
-                            if not lo_path:
-                                st.warning("Diagnóstico: O servidor não achou o LibreOffice. Verifique packages.txt")
+        # Botão PDF
+        if c2.button("📄 Gerar PDF (Experimental)", use_container_width=True):
+            sel = df_ed[df_ed["Selecionar"] == True]
+            if sel.empty: st.error("Selecione uma linha!")
+            elif not arquivo_modelo: st.error("Carregue o modelo!")
+            else:
+                with st.spinner("Gerando PDF (Pode demorar até 1 min)..."):
+                    bio = preencher_modelo_word(arquivo_modelo, sel.iloc[0])
+                    pdf, erro = converter_docx_para_pdf(bio)
+                    
+                    if pdf:
+                        st.success("Sucesso!")
+                        st.download_button("⬇️ Baixar PDF", pdf, "Relatorio.pdf", "application/pdf")
+                    else:
+                        st.error("Erro na conversão PDF.")
+                        st.code(erro) # Mostre esse erro para mim!
 
 elif menu == "⚗️ Solução Preservativa":
-    st.info("Mude para a aba Madeira para ver os relatórios")
-    df = carregar_dados("Solucao")
-    if not df.empty:
-        df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-        if st.button("Salvar Solução"): salvar_dados(df_ed, "Solucao"); st.rerun()
+    st.info("Mude para Madeira"); df=carregar_dados("Solucao"); st.data_editor(df)
