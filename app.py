@@ -24,23 +24,16 @@ def encontrar_id_arquivo(service, nome_arquivo):
     items = results.get('files', [])
     return items[0]['id'] if items else None
 
-# --- INTELIGÊNCIA DE CORREÇÃO (O FILTRO MÁGICO) ---
+# --- INTELIGÊNCIA DE CORREÇÃO (BASTIDORES) ---
 def corrigir_valores_dataframe(df):
-    """
-    Passa um pente fino na tabela inteira antes de mostrar na tela.
-    Se achar números absurdos (ex: Retenção 368 ou Balanço 45800), divide.
-    """
-    # Colunas que sabemos que são químicas/decimais
+    """Garante que o cliente veja 3,68 na tela, mesmo se o Excel tiver 368"""
     cols_quimicas = [
         'Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio',
         'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração'
     ]
-    
-    # Procura colunas parecidas no DF (ignora maiuscula/minuscula)
     for col in df.columns:
         for alvo in cols_quimicas:
-            if alvo.lower() in col.lower(): # Se achou uma coluna quimica
-                # Aplica a correção linha por linha
+            if alvo.lower() in col.lower():
                 df[col] = df[col].apply(lambda x: corrigir_numero_individual(x))
     return df
 
@@ -48,23 +41,21 @@ def corrigir_numero_individual(valor):
     try:
         if pd.isna(valor) or valor == "": return 0.0
         v = float(str(valor).replace(",", "."))
-        
-        # Regra de Ouro:
-        # Se for Retenção e > 100, divide (ex: 368 -> 3.68)
-        # Se for % e > 100, divide (ex: 4580 -> 45.8)
-        if v > 1000: v /= 100.0  # Caso extremo 36800 -> 368
-        if v > 100:  v /= 100.0  # Caso comum 368 -> 3.68
-        
+        # Se for gigante, divide. Se for normal, mantém.
+        if v > 1000: v /= 100.0
+        if v > 100:  v /= 100.0
         return v
-    except:
-        return valor # Se não for número, devolve como está
+    except: return valor
 
+# --- OPERAÇÕES DE ARQUIVO ---
 @st.cache_data(ttl=60)
 def carregar_excel_drive(aba_nome):
     try:
         service = get_drive_service()
         file_id = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
-        if not file_id: return pd.DataFrame()
+        if not file_id: 
+            st.error("Arquivo não encontrado no Drive. Verifique o nome.")
+            return pd.DataFrame()
 
         request = service.files().get_media(fileId=file_id)
         arquivo_bytes = io.BytesIO(request.execute())
@@ -72,12 +63,11 @@ def carregar_excel_drive(aba_nome):
         df = pd.read_excel(arquivo_bytes, sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
         
-        # APLICAR A CORREÇÃO NA TELA AQUI!
+        # Aplica a correção antes de mostrar
         df = corrigir_valores_dataframe(df)
-        
         return df
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro ao carregar: {e}")
         return pd.DataFrame()
 
 def salvar_excel_drive(df, aba_nome):
@@ -86,12 +76,8 @@ def salvar_excel_drive(df, aba_nome):
         file_id = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
         if not file_id: return
         
-        # Baixa arquivo atual para não perder outras abas
-        request = service.files().get_media(fileId=file_id)
+        # Salva o dataframe corrigido de volta no Excel
         buffer_novo = io.BytesIO()
-        
-        # Salva sobrescrevendo a aba certa
-        # (Obs: Isso salva os números JÁ CORRIGIDOS de volta no Excel!)
         with pd.ExcelWriter(buffer_novo, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name=aba_nome, index=False)
             
@@ -99,20 +85,15 @@ def salvar_excel_drive(df, aba_nome):
         media = MediaIoBaseUpload(buffer_novo, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=file_id, media_body=media).execute()
         
-        st.toast("Salvo e Corrigido!", icon="💾")
+        st.toast("Dados Salvos e Corrigidos no Drive!", icon="✅")
         st.cache_data.clear()
-    except Exception as e: st.error(f"Erro salvar: {e}")
+    except Exception as e: st.error(f"Erro ao salvar: {e}")
 
-# --- FORMATAÇÃO PDF ---
-def clean_text(text):
-    if pd.isna(text): return ""
-    return str(text).encode('latin-1', 'replace').decode('latin-1')
+# --- FORMATADORES E PDF ---
+def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
 
 def formatar_numero_pdf(valor):
-    try:
-        v = float(str(valor).replace(",", "."))
-        # Formata bonito para o PDF
-        return "{:,.2f}".format(v).replace(",", "X").replace(".", ",").replace("X", ".")
+    try: return "{:,.2f}".format(float(str(valor).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(valor)
 
 def formatar_data(valor):
@@ -137,24 +118,17 @@ class RelatorioPDF(FPDF):
     def header(self):
         if os.path.exists("logo_ufv.png"): self.image("logo_ufv.png", 10, 8, 25)
         if os.path.exists("logo_montana.png"): self.image("logo_montana.png", 175, 8, 25)
-        self.set_y(12)
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, clean_text('Relatório de Ensaio'), 0, 1, 'C')
+        self.set_y(12); self.set_font('Arial', 'B', 14); self.cell(0, 10, clean_text('Relatório de Ensaio'), 0, 1, 'C')
     def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 6)
-        self.cell(0, 10, clean_text(f'Página {self.page_no()}'), 0, 0, 'C')
+        self.set_y(-15); self.set_font('Arial', 'I', 6); self.cell(0, 10, clean_text(f'Página {self.page_no()}'), 0, 0, 'C')
     def campo_form(self, label, valor, x, y, w, h=6, align='L', multi=False):
-        self.set_xy(x, y); self.set_font('Arial', '', 6)
-        self.cell(w, 3, clean_text(label), 0, 0, 'L')
+        self.set_xy(x, y); self.set_font('Arial', '', 6); self.cell(w, 3, clean_text(label), 0, 0, 'L')
         self.set_xy(x, y+3); self.set_font('Arial', '', 8)
         if multi: self.rect(x, y+3, w, h); self.multi_cell(w, 4, clean_text(valor), 0, align)
         else: self.cell(w, h, clean_text(valor), 1, 0, align)
 
 def gerar_pdf_nativo(dados):
-    pdf = RelatorioPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf = RelatorioPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
     
     # 1. Cabeçalho
     y = 30
@@ -184,107 +158,96 @@ def gerar_pdf_nativo(dados):
     pdf.cell(80, 5, clean_text("Balanceamento químico"), 1, 0, 'C'); pdf.set_xy(x+150, cy); pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
     pdf.set_xy(x+70, cy+5); pdf.cell(30, 5, clean_text("Resultados (%)"), 1, 0, 'C'); pdf.cell(50, 5, clean_text("Padrões"), 1, 0, 'C'); pdf.set_xy(x, cy+10)
 
-    # Busca valores (que já estão corrigidos no DF, mas garantimos formatação aqui)
     def pegar_num(keys): return formatar_numero_pdf(buscar_valor(dados, keys))
-    
-    kg_cr = pegar_num(["Retenção Cromo", "Cromo"])
-    kg_cu = pegar_num(["Retenção Cobre", "Cobre"])
-    kg_as = pegar_num(["Retenção Arsênio", "Arsenio"])
-    
-    pc_cr = pegar_num(["Balanço Cromo", "Cromo %"])
-    pc_cu = pegar_num(["Balanço Cobre", "Cobre %"])
-    pc_as = pegar_num(["Balanço Arsênio", "Arsenio %"])
+    kg_cr = pegar_num(["Retenção Cromo", "Cromo"]); kg_cu = pegar_num(["Retenção Cobre", "Cobre"]); kg_as = pegar_num(["Retenção Arsênio", "Arsenio"])
+    pc_cr = pegar_num(["Balanço Cromo", "Cromo %"]); pc_cu = pegar_num(["Balanço Cobre", "Cobre %"]); pc_as = pegar_num(["Balanço Arsênio", "Arsenio %"])
 
     pdf.set_font('Arial', '', 8)
     def row(n, k, p, mn, mx, mt=""):
         pdf.cell(40, 6, clean_text(n), 1, 0, 'L'); pdf.cell(30, 6, k, 1, 0, 'C'); pdf.cell(30, 6, p, 1, 0, 'C')
         pdf.cell(25, 6, mn, 1, 0, 'C'); pdf.cell(25, 6, mx, 1, 0, 'C'); pdf.cell(40, 6, clean_text(mt), 1, 1, 'C')
-
     row("Cromo (CrO3)", kg_cr, pc_cr, "41,8", "53,2", "Metodo UFV 01")
     row("Cobre (CuO)", kg_cu, pc_cu, "15,2", "22,8", "")
     row("Arsenio (As2O5)", kg_as, pc_as, "27,3", "40,7", "")
 
-    # Total (Recalcula visualmente se precisar)
     try: val_tot = float(kg_cr.replace(",", ".")) + float(kg_cu.replace(",", ".")) + float(kg_as.replace(",", "."))
     except: val_tot = 0
-    
-    pdf.set_font('Arial', 'B', 8)
-    pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
-    pdf.cell(30, 6, formatar_numero_pdf(val_tot), 1, 0, 'C')
-    pdf.cell(30, 6, "-", 1, 0, 'C'); pdf.cell(90, 6, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
+    pdf.set_font('Arial', 'B', 8); pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
+    pdf.cell(30, 6, formatar_numero_pdf(val_tot), 1, 0, 'C'); pdf.cell(30, 6, "-", 1, 0, 'C'); pdf.cell(90, 6, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
 
     # 5. Penetração
     y = pdf.get_y() + 5; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
-    y += 7
-    pdf.campo_form("Grau", buscar_valor(dados, ["Grau"]), 10, y, 30, 'C')
-    pdf.campo_form("Tipo", buscar_valor(dados, ["Tipo"]), 45, y, 50, 'C')
+    y += 7; pdf.campo_form("Grau", buscar_valor(dados, ["Grau"]), 10, y, 30, 'C'); pdf.campo_form("Tipo", buscar_valor(dados, ["Tipo"]), 45, y, 50, 'C')
     pdf.set_xy(100, y); pdf.set_font('Arial', '', 6); pdf.cell(90, 3, clean_text("Descrição"), 0, 0, 'L')
     pdf.set_xy(100, y+3); pdf.set_font('Arial', '', 8); pdf.rect(100, y+3, 100, 12)
     pdf.multi_cell(100, 4, clean_text(buscar_valor(dados, ["Descrição Penetração", "Descricao"])), 0, 'L')
 
-    # 6. Observações e Assinatura
+    # 6. Observações
     y += 20; obs = buscar_valor(dados, ["Observação", "Obs"])
     if obs: pdf.set_y(y); pdf.campo_form("Observações", obs, 10, y, 190, 12, 'L', True)
-    
-    pdf.set_y(-35); pdf.set_font('Arial', '', 9)
-    pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
+    pdf.set_y(-35); pdf.set_font('Arial', '', 9); pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
     return pdf.output(dest='S').encode('latin-1')
 
 # --- MAIN ---
 def main():
     if 'logado' not in st.session_state: st.session_state['logado'] = False
+    
+    # LOGIN (Reativado Simples)
     if not st.session_state['logado']:
         c1,c2,c3 = st.columns([1,2,1])
         with c2:
-            st.title("🔐 Login")
-            u = st.text_input("User"); p = st.text_input("Pass", type="password")
+            st.title("🔐 Login UFV")
+            u = st.text_input("Usuário")
+            p = st.text_input("Senha", type="password")
             if st.button("Entrar", type="primary"):
-                 # Login Simples (admin/admin)
+                # Defina suas senhas finais aqui
                 if u == "admin" and p == "admin": 
-                    st.session_state.update({'logado':True, 'tipo':'LPM', 'user':u}); st.rerun()
+                    st.session_state.update({'logado':True, 'tipo':'LPM', 'user':u})
+                    st.rerun()
                 elif u == "montana" and p == "montana":
-                    st.session_state.update({'logado':True, 'tipo':'Montana', 'user':u}); st.rerun()
-                else: st.error("Erro")
+                    st.session_state.update({'logado':True, 'tipo':'Montana', 'user':u})
+                    st.rerun()
+                else: st.error("Acesso Negado")
         return
 
+    # LOGADO
     tipo = st.session_state['tipo']
     st.sidebar.info(f"👤 {st.session_state['user']} ({tipo})")
     if st.sidebar.button("Sair"): st.session_state['logado'] = False; st.rerun()
 
-    st.title("🌲 Sistema UFV (Modo Drive Direto)")
+    st.title("🌲 Sistema Controle UFV")
     menu = st.sidebar.radio("Menu", ["Madeira Tratada", "Solução"])
 
     if menu == "Madeira Tratada":
-        # CARREGA E JÁ CORRIGE NA TELA!
         df = carregar_excel_drive("Madeira Tratada")
-        
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
             
+            # Mostra dados (já corrigidos para o usuário)
             if tipo == "LPM":
-                # Mostra a tabela já corrigida para você
                 df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-                if st.button("💾 Salvar (Corrige Excel)", type="primary"):
+                if st.button("💾 SALVAR DADOS", type="primary"): 
                     salvar_excel_drive(df, "Madeira Tratada")
             else:
                 cfg = {c: st.column_config.Column(disabled=True) for c in df.columns if c!="Selecionar"}
                 cfg["Selecionar"] = st.column_config.CheckboxColumn(disabled=False)
                 df = st.data_editor(df, column_config=cfg, use_container_width=True)
 
+            # Botão PDF
             sel = df[df["Selecionar"]==True]
-            if st.button("📄 GERAR PDF", type="primary"):
+            if st.button("📄 GERAR RELATÓRIO PDF", type="primary"):
                 if not sel.empty:
                     try:
                         linha = sel.iloc[0].to_dict()
                         pdf = gerar_pdf_nativo(linha)
-                        nm = f"{linha.get('Código UFV','Relatorio')}.pdf"
-                        st.download_button(f"⬇️ {nm}", pdf, nm, "application/pdf")
-                    except Exception as e: st.error(f"Erro: {e}")
-                else: st.warning("Selecione um item.")
+                        nome = f"{linha.get('Código UFV','Relatorio')}.pdf"
+                        st.download_button(f"⬇️ BAIXAR {nome}", pdf, nome, "application/pdf")
+                    except Exception as e: st.error(f"Erro no PDF: {e}")
+                else: st.warning("Selecione uma amostra na tabela acima.")
     
     elif menu == "Solução":
         df = carregar_excel_drive("Solução Preservativa")
-        if not df.empty: st.dataframe(df)
+        if not df.empty: st.dataframe(df, use_container_width=True)
 
 if __name__ == "__main__":
     main()
