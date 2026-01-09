@@ -13,7 +13,7 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 NOME_ARQUIVO_EXCEL = "Planilha controle UFV.xlsx"
 
 # ⚠️⚠️ COLOQUE AQUI O ID DA PASTA QUE VOCÊ CRIOU NO DRIVE ⚠️⚠️
-ID_PASTA_RAIZ = "" 
+ID_PASTA_RAIZ = "1AQ_k_DAjTpbjWt5KPJNDWs63fr8O0DdD" 
 
 # --- CONEXÃO DRIVE ---
 def get_drive_service():
@@ -254,3 +254,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
