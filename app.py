@@ -12,7 +12,7 @@ from datetime import datetime
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 NOME_ARQUIVO_EXCEL = "Planilha controle UFV.xlsx"
 
-# ✅ ID DA PASTA CONFIGURADO
+# ✅ ID DA PASTA (JÁ CONFIGURADO)
 ID_PASTA_RAIZ = "1AQ_k_DAjTpbjWt5KPJNDWs63fr8O0DdD"
 
 # --- CONEXÃO DRIVE ---
@@ -29,21 +29,13 @@ def encontrar_id_arquivo(service, nome_arquivo):
 
 # --- GERENCIADOR DE PASTAS ---
 def get_or_create_folder(service, folder_name, parent_id):
-    """Cria pasta se não existir"""
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     items = results.get('files', [])
-    
-    if items:
-        return items[0]['id']
+    if items: return items[0]['id']
     else:
-        metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [parent_id]
-        }
-        file = service.files().create(body=metadata, fields='id').execute()
-        return file.get('id')
+        metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
+        return service.files().create(body=metadata, fields='id').execute().get('id')
 
 def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     try:
@@ -53,53 +45,57 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
 
         service = get_drive_service()
         
-        # 1. Descobre a Data (Ano/Mês)
+        # 1. Tratamento de Data
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 
                  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         
         data_obj = datetime.now()
-        # Tenta converter data vinda do Excel ou Texto
         if isinstance(data_entrada_raw, datetime): 
             data_obj = data_entrada_raw
         elif data_entrada_raw and str(data_entrada_raw).strip() not in ["", "-"]:
             try:
                 v_str = str(data_entrada_raw).strip().split(" ")[0]
                 for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"]:
-                    try: 
-                        data_obj = datetime.strptime(v_str, fmt)
-                        break
+                    try: data_obj = datetime.strptime(v_str, fmt); break
                     except: continue
             except: pass
 
         ano_str = str(data_obj.year)
         mes_str = meses[data_obj.month]
         
-        # 2. Navega: Pasta Mestre -> Ano -> Mês
+        # 2. Navegação de Pastas
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
         mes_id = get_or_create_folder(service, mes_str, ano_id)
         
-        # 3. Salva o Arquivo
-        media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
+        # 3. Upload do Arquivo (MODO SEGURO)
+        # Limpa o nome do arquivo para evitar erros (tira barras)
+        nome_limpo = nome_arquivo.replace("/", "-").replace("\\", "-")
+        
+        # Cria o objeto de arquivo na memória
+        arquivo_buffer = io.BytesIO(pdf_bytes)
+        
+        # ⚠️ MUDANÇA IMPORTANTE: resumable=False para evitar travamentos em arquivos pequenos
+        media = MediaIoBaseUpload(arquivo_buffer, mimetype='application/pdf', resumable=False)
+        
         metadata = {
-            'name': nome_arquivo,
+            'name': nome_limpo,
             'parents': [mes_id]
         }
         
-        service.files().create(body=metadata, media_body=media, fields='id').execute()
+        arquivo_final = service.files().create(body=metadata, media_body=media, fields='id').execute()
         
         st.balloons()
-        st.toast(f"Salvo em: {ano_str}/{mes_str}", icon="✅")
-        st.success(f"Arquivo salvo com sucesso na pasta: **{ano_str} > {mes_str}**")
+        st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅")
+        st.success(f"Arquivo **{nome_limpo}** salvo com sucesso na pasta **{ano_str} > {mes_str}**!")
         
     except Exception as e:
-        st.error(f"Erro ao salvar no Drive: {e}")
+        st.error(f"Erro DETALHADO ao salvar no Drive: {e}")
 
-# --- INTELIGÊNCIA DE CORREÇÃO (NUMÉRICA) ---
+# --- INTELIGÊNCIA MATEMÁTICA ---
 def corrigir_numero_individual(v):
     try:
         if pd.isna(v) or v=="": return 0.0
         val = float(str(v).replace(",", "."))
-        # Se for gigante (ex: 368), divide por 100 virando 3.68
         if val > 1000: val /= 100.0
         if val > 100: val /= 100.0
         return val
@@ -113,24 +109,22 @@ def corrigir_valores_dataframe(df):
                 df[col] = df[col].apply(corrigir_numero_individual)
     return df
 
-# --- CARREGAMENTO DE ARQUIVOS ---
+# --- CARREGAMENTO ---
 @st.cache_data(ttl=60)
 def carregar_excel_drive(aba_nome):
     try:
         service = get_drive_service()
         fid = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
         if not fid: 
-            st.error(f"Arquivo '{NOME_ARQUIVO_EXCEL}' não encontrado no Drive.")
+            st.error(f"Arquivo '{NOME_ARQUIVO_EXCEL}' não encontrado.")
             return pd.DataFrame()
         
         request = service.files().get_media(fileId=fid)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
-        
-        # Aplica a correção automática
         return corrigir_valores_dataframe(df)
     except Exception as e:
-        st.error(f"Erro ao carregar Excel: {e}")
+        st.error(f"Erro carregar Excel: {e}")
         return pd.DataFrame()
 
 def salvar_excel_drive(df, aba_nome):
@@ -147,11 +141,11 @@ def salvar_excel_drive(df, aba_nome):
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=fid, media_body=media).execute()
         
-        st.toast("Dados Excel Atualizados!", icon="💾")
+        st.toast("Excel Salvo!", icon="💾")
         st.cache_data.clear()
     except Exception as e: st.error(f"Erro salvar Excel: {e}")
 
-# --- FORMATADORES ---
+# --- PDF HELPERS ---
 def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
 def fmt_num(v): 
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
