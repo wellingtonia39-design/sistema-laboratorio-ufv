@@ -24,6 +24,76 @@ def encontrar_id_arquivo(service, nome_arquivo):
     items = results.get('files', [])
     return items[0]['id'] if items else None
 
+# --- GERENCIADOR DE PASTAS (A MÁGICA NOVA) ---
+def get_or_create_folder(service, folder_name, parent_id=None):
+    """Procura uma pasta. Se não achar, cria."""
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    items = results.get('files', [])
+    
+    if items:
+        return items[0]['id'] # Retorna ID da pasta existente
+    else:
+        # Cria a pasta
+        metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        if parent_id:
+            metadata['parents'] = [parent_id]
+            
+        file = service.files().create(body=metadata, fields='id').execute()
+        return file.get('id')
+
+def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
+    """Salva o PDF na estrutura: Montana > Ano > Mês"""
+    try:
+        service = get_drive_service()
+        
+        # 1. Tenta descobrir a data para criar as pastas
+        meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 
+                 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
+        
+        data_obj = datetime.now() # Padrão hoje se falhar
+        
+        # Tenta converter a data de entrada (Texto ou Excel)
+        if isinstance(data_entrada_raw, datetime):
+            data_obj = data_entrada_raw
+        elif data_entrada_raw and str(data_entrada_raw).strip() != "" and str(data_entrada_raw) != "-":
+            try:
+                v_str = str(data_entrada_raw).strip().split(" ")[0]
+                for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"]:
+                    try: 
+                        data_obj = datetime.strptime(v_str, fmt)
+                        break
+                    except: continue
+            except: pass
+
+        ano_str = str(data_obj.year)
+        mes_str = meses[data_obj.month]
+        
+        # 2. Navega ou Cria as Pastas
+        root_id = get_or_create_folder(service, "Montana")           # Pasta Raiz
+        ano_id = get_or_create_folder(service, ano_str, root_id)     # Pasta Ano
+        mes_id = get_or_create_folder(service, mes_str, ano_id)      # Pasta Mês
+        
+        # 3. Salva o Arquivo lá dentro
+        media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
+        metadata = {
+            'name': nome_arquivo,
+            'parents': [mes_id]
+        }
+        
+        service.files().create(body=metadata, media_body=media, fields='id').execute()
+        st.toast(f"Salvo em: Montana/{ano_str}/{mes_str}", icon="☁️")
+        st.balloons()
+        
+    except Exception as e:
+        st.error(f"Erro ao salvar no Drive: {e}")
+
 # --- INTELIGÊNCIA DE CORREÇÃO ---
 def corrigir_valores_dataframe(df):
     cols_quimicas = [
@@ -52,7 +122,7 @@ def carregar_excel_drive(aba_nome):
         service = get_drive_service()
         file_id = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
         if not file_id: 
-            st.error("Arquivo não encontrado no Drive.")
+            st.error("Arquivo Excel não encontrado no Drive.")
             return pd.DataFrame()
 
         request = service.files().get_media(fileId=file_id)
@@ -80,7 +150,7 @@ def salvar_excel_drive(df, aba_nome):
         media = MediaIoBaseUpload(buffer_novo, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=file_id, media_body=media).execute()
         
-        st.toast("Salvo com sucesso!", icon="✅")
+        st.toast("Dados Salvos no Excel!", icon="✅")
         st.cache_data.clear()
     except Exception as e: st.error(f"Erro ao salvar: {e}")
 
@@ -117,7 +187,6 @@ class RelatorioPDF(FPDF):
     def footer(self):
         self.set_y(-15); self.set_font('Arial', 'I', 6); self.cell(0, 10, clean_text(f'Página {self.page_no()}'), 0, 0, 'C')
     
-    # CORREÇÃO AQUI: Garante que align seja passado corretamente
     def campo_form(self, label, valor, x, y, w, h=6, align='L', multi=False):
         self.set_xy(x, y); self.set_font('Arial', '', 6); self.cell(w, 3, clean_text(label), 0, 0, 'L')
         self.set_xy(x, y+3); self.set_font('Arial', '', 8)
@@ -127,19 +196,16 @@ class RelatorioPDF(FPDF):
 def gerar_pdf_nativo(dados):
     pdf = RelatorioPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 1. Cabeçalho (CORRIGIDO: align='C')
     y = 30
     pdf.campo_form("Data de Entrada", formatar_data(buscar_valor(dados, ["Data de entrada", "Entrada"])), 10, y, 40, align='C')
     pdf.campo_form("Número ID", clean_text(buscar_valor(dados, ["Código UFV", "ID"])), 150, y-5, 50, align='C')
     pdf.campo_form("Data de Emissão", formatar_data(buscar_valor(dados, ["Data de Registro", "Fim da análise"])), 150, y+8, 50, align='C')
 
-    # 2. Cliente
     y += 20; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(0, 5, clean_text("DADOS DO CLIENTE"), 0, 1, 'L')
     y += 6; pdf.campo_form("Cliente", buscar_valor(dados, ["Nome do Cliente"]), 10, y, 190)
     y += 11; pdf.campo_form("Cidade/UF", f"{buscar_valor(dados,['Cidade'])}/{buscar_valor(dados,['Estado'])}", 10, y, 90)
     pdf.campo_form("E-mail", buscar_valor(dados, ["E-mail"]), 105, y, 95)
 
-    # 3. Amostra (CORRIGIDO: align='C')
     y += 15; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(0, 5, clean_text("IDENTIFICAÇÃO DA AMOSTRA"), 0, 1, 'L')
     y += 6; pdf.campo_form("Ref. Cliente", buscar_valor(dados, ["Indentificação de Amostra"]), 10, y, 190)
     y += 11; pdf.campo_form("Madeira", buscar_valor(dados, ["Madeira"]), 10, y, 90)
@@ -148,7 +214,6 @@ def gerar_pdf_nativo(dados):
     pdf.campo_form("Norma ABNT", buscar_valor(dados, ["Norma"]), 75, y, 60)
     pdf.campo_form("Retenção Esp.", formatar_numero_pdf(buscar_valor(dados, ["Retenção"])), 140, y, 60, align='C')
 
-    # 4. Química
     y += 20; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
     pdf.set_font('Arial', 'B', 7); x=10; cy=pdf.get_y()
     pdf.cell(40, 10, clean_text("Ingredientes ativos"), 1, 0, 'C'); pdf.cell(30, 10, clean_text("Resultado (kg/m3)"), 1, 0, 'C')
@@ -172,14 +237,12 @@ def gerar_pdf_nativo(dados):
     pdf.set_font('Arial', 'B', 8); pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
     pdf.cell(30, 6, formatar_numero_pdf(val_tot), 1, 0, 'C'); pdf.cell(30, 6, "-", 1, 0, 'C'); pdf.cell(90, 6, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
 
-    # 5. Penetração (CORRIGIDO: align='C')
     y = pdf.get_y() + 5; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
     y += 7; pdf.campo_form("Grau", buscar_valor(dados, ["Grau"]), 10, y, 30, align='C'); pdf.campo_form("Tipo", buscar_valor(dados, ["Tipo"]), 45, y, 50, align='C')
     pdf.set_xy(100, y); pdf.set_font('Arial', '', 6); pdf.cell(90, 3, clean_text("Descrição"), 0, 0, 'L')
     pdf.set_xy(100, y+3); pdf.set_font('Arial', '', 8); pdf.rect(100, y+3, 100, 12)
     pdf.multi_cell(100, 4, clean_text(buscar_valor(dados, ["Descrição Penetração", "Descricao"])), 0, 'L')
 
-    # 6. Observações e Assinatura
     y += 20; obs = buscar_valor(dados, ["Observação", "Obs"])
     if obs: pdf.set_y(y); pdf.campo_form("Observações", obs, 10, y, 190, 12, 'L', True)
     pdf.set_y(-35); pdf.set_font('Arial', '', 9); pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
@@ -188,6 +251,7 @@ def gerar_pdf_nativo(dados):
 # --- MAIN ---
 def main():
     if 'logado' not in st.session_state: st.session_state['logado'] = False
+    
     if not st.session_state['logado']:
         c1,c2,c3 = st.columns([1,2,1])
         with c2:
@@ -214,22 +278,45 @@ def main():
             if "Selecionar" not in df.columns: df.insert(0, "Selecionar", False)
             if tipo == "LPM":
                 df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-                if st.button("💾 SALVAR DADOS", type="primary"): salvar_excel_drive(df, "Madeira Tratada")
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("💾 SALVAR DADOS NO EXCEL", type="primary"): salvar_excel_drive(df, "Madeira Tratada")
             else:
                 cfg = {c: st.column_config.Column(disabled=True) for c in df.columns if c!="Selecionar"}
                 cfg["Selecionar"] = st.column_config.CheckboxColumn(disabled=False)
                 df = st.data_editor(df, column_config=cfg, use_container_width=True)
 
             sel = df[df["Selecionar"]==True]
-            if st.button("📄 GERAR RELATÓRIO PDF", type="primary"):
-                if not sel.empty:
-                    try:
-                        linha = sel.iloc[0].to_dict()
-                        pdf = gerar_pdf_nativo(linha)
-                        nome = f"{linha.get('Código UFV','Relatorio')}.pdf"
-                        st.download_button(f"⬇️ BAIXAR {nome}", pdf, nome, "application/pdf")
-                    except Exception as e: st.error(f"Erro no PDF: {e}")
-                else: st.warning("Selecione uma amostra.")
+            
+            st.divider()
+            c_pdf, c_drive = st.columns(2)
+            
+            with c_pdf:
+                if st.button("📄 GERAR RELATÓRIO PDF"):
+                    if not sel.empty:
+                        try:
+                            linha = sel.iloc[0].to_dict()
+                            pdf = gerar_pdf_nativo(linha)
+                            nome = f"{linha.get('Código UFV','Relatorio')}.pdf"
+                            st.download_button(f"⬇️ BAIXAR {nome}", pdf, nome, "application/pdf")
+                        except Exception as e: st.error(f"Erro no PDF: {e}")
+                    else: st.warning("Selecione uma amostra.")
+            
+            with c_drive:
+                # NOVO BOTÃO DE SALVAR NO DRIVE AUTOMATICAMENTE
+                if st.button("☁️ SALVAR PDF NO DRIVE (AUTO)"):
+                    if not sel.empty:
+                        try:
+                            linha = sel.iloc[0].to_dict()
+                            pdf_bytes = gerar_pdf_nativo(linha)
+                            nome_arquivo = f"{linha.get('Código UFV','Relatorio')}.pdf"
+                            dt_entrada = buscar_valor(linha, ["Data de entrada", "Entrada"])
+                            
+                            # Chama a função mágica de salvar organizado
+                            salvar_pdf_organizado(pdf_bytes, nome_arquivo, dt_entrada)
+                        except Exception as e: st.error(f"Erro ao salvar: {e}")
+                    else: st.warning("Selecione uma amostra.")
     
     elif menu == "Solução":
         df = carregar_excel_drive("Solução Preservativa")
