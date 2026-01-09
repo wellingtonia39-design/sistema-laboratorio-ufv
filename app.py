@@ -13,8 +13,7 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 NOME_ARQUIVO_EXCEL = "Planilha controle UFV.xlsx"
 
 # ⚠️⚠️ COLOQUE AQUI O ID DA PASTA QUE VOCÊ CRIOU NO DRIVE ⚠️⚠️
-# Exemplo: "17l_KJS8s7djs9SD87s_kjsd" (Copie do link do navegador)
-ID_PASTA_RAIZ = "1AQ_k_DAjTpbjWt5KPJNDWs63fr8O0DdD"  # <--- COLE O CÓDIGO AQUI DENTRO DAS ASPAS
+ID_PASTA_RAIZ = "" 
 
 # --- CONEXÃO DRIVE ---
 def get_drive_service():
@@ -30,32 +29,21 @@ def encontrar_id_arquivo(service, nome_arquivo):
 
 # --- GERENCIADOR DE PASTAS ---
 def get_or_create_folder(service, folder_name, parent_id):
-    """Cria subpasta dentro da pasta mãe"""
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     items = results.get('files', [])
-    
-    if items:
-        return items[0]['id']
+    if items: return items[0]['id']
     else:
-        metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [parent_id]
-        }
-        file = service.files().create(body=metadata, fields='id').execute()
-        return file.get('id')
+        metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
+        return service.files().create(body=metadata, fields='id').execute().get('id')
 
 def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     try:
-        # Verifica se o usuário configurou o ID
         if not ID_PASTA_RAIZ:
-            st.error("ERRO: Você precisa configurar o ID_PASTA_RAIZ no código (linha 15)!")
+            st.error("ERRO: Configure o ID_PASTA_RAIZ no código!")
             return
 
         service = get_drive_service()
-        
-        # 1. Descobre Ano e Mês
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 
                  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         
@@ -72,33 +60,19 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         ano_str = str(data_obj.year)
         mes_str = meses[data_obj.month]
         
-        # 2. Navega na estrutura (Pasta Raiz > Ano > Mês)
-        # Cria a pasta do ANO dentro da Raiz
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
-        # Cria a pasta do MÊS dentro do Ano
         mes_id = get_or_create_folder(service, mes_str, ano_id)
         
-        # 3. Salva o Arquivo
         media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
         metadata = {'name': nome_arquivo, 'parents': [mes_id]}
         
         service.files().create(body=metadata, media_body=media, fields='id').execute()
         st.balloons()
         st.toast(f"Salvo em: {ano_str}/{mes_str}", icon="✅")
-        st.success(f"Arquivo salvo com sucesso na pasta {ano_str}/{mes_str}!")
         
-    except Exception as e:
-        st.error(f"Erro ao salvar no Drive: {e}")
+    except Exception as e: st.error(f"Erro Drive: {e}")
 
-# --- CORREÇÃO DE VALORES ---
-def corrigir_valores_dataframe(df):
-    cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração']
-    for col in df.columns:
-        for alvo in cols:
-            if alvo.lower() in col.lower():
-                df[col] = df[col].apply(corrigir_numero_individual)
-    return df
-
+# --- CORREÇÃO E ARQUIVOS ---
 def corrigir_numero_individual(v):
     try:
         if pd.isna(v) or v=="": return 0.0
@@ -108,19 +82,24 @@ def corrigir_numero_individual(v):
         return val
     except: return v
 
-# --- ARQUIVOS ---
+def corrigir_valores_dataframe(df):
+    cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração']
+    for col in df.columns:
+        for alvo in cols:
+            if alvo.lower() in col.lower(): df[col] = df[col].apply(corrigir_numero_individual)
+    return df
+
 @st.cache_data(ttl=60)
 def carregar_excel_drive(aba_nome):
     try:
         service = get_drive_service()
         fid = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
-        if not fid: 
-            st.error("Planilha Excel não encontrada."); return pd.DataFrame()
+        if not fid: st.error("Arquivo não encontrado."); return pd.DataFrame()
         request = service.files().get_media(fileId=fid)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
         return corrigir_valores_dataframe(df)
-    except Exception as e: st.error(f"Erro carregar: {e}"); return pd.DataFrame()
+    except Exception as e: st.error(f"Erro: {e}"); return pd.DataFrame()
 
 def salvar_excel_drive(df, aba_nome):
     try:
@@ -133,9 +112,9 @@ def salvar_excel_drive(df, aba_nome):
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=fid, media_body=media).execute()
         st.toast("Excel Salvo!", icon="💾"); st.cache_data.clear()
-    except Exception as e: st.error(f"Erro salvar Excel: {e}")
+    except Exception as e: st.error(f"Erro salvar: {e}")
 
-# --- PDF ---
+# --- PDF HELPERS ---
 def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
 def fmt_num(v): 
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
@@ -157,6 +136,7 @@ def get_val(d, keys):
             if k in c and str(dn[c]).strip()!="": return dn[c]
     return ""
 
+# --- CLASSE PDF (CORRIGIDA) ---
 class RPDF(FPDF):
     def header(self):
         if os.path.exists("logo_ufv.png"): self.image("logo_ufv.png", 10, 8, 25)
@@ -164,11 +144,16 @@ class RPDF(FPDF):
         self.set_y(12); self.set_font('Arial','B',14); self.cell(0,10,clean_text('Relatório de Ensaio'),0,1,'C')
     def footer(self):
         self.set_y(-15); self.set_font('Arial','I',6); self.cell(0,10,clean_text(f'Página {self.page_no()}'),0,0,'C')
-    def field(self, l, v, x, y, w, h=6, a='L', m=False):
-        self.set_xy(x,y); self.set_font('Arial','',6); self.cell(w,3,clean_text(l),0,0,'L')
-        self.set_xy(x,y+3); self.set_font('Arial','',8)
-        if m: self.rect(x,y+3,w,h); self.multi_cell(w,4,clean_text(v),0,a)
-        else: self.cell(w,h,clean_text(v),1,0,a)
+    
+    # AQUI ESTAVA O ERRO: mudei 'a' de volta para 'align'
+    def field(self, label, valor, x, y, w, h=6, align='L', multi=False):
+        self.set_xy(x, y); self.set_font('Arial', '', 6); self.cell(w, 3, clean_text(label), 0, 0, 'L')
+        self.set_xy(x, y+3); self.set_font('Arial', '', 8)
+        if multi: 
+            self.rect(x, y+3, w, h)
+            self.multi_cell(w, 4, clean_text(valor), 0, align)
+        else: 
+            self.cell(w, h, clean_text(valor), 1, 0, align)
 
 def gerar_pdf(d):
     pdf = RPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
@@ -176,10 +161,12 @@ def gerar_pdf(d):
     pdf.field("Data de Entrada", fmt_date(get_val(d, ["Data de entrada", "Entrada"])), 10, y, 40, align='C')
     pdf.field("Número ID", clean_text(get_val(d, ["Código UFV", "ID"])), 150, y-5, 50, align='C')
     pdf.field("Data de Emissão", fmt_date(get_val(d, ["Data de Registro", "Fim da análise"])), 150, y+8, 50, align='C')
+    
     y+=20; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(0,5,clean_text("DADOS DO CLIENTE"),0,1,'L')
     y+=6; pdf.field("Cliente", get_val(d, ["Nome do Cliente"]), 10, y, 190)
     y+=11; pdf.field("Cidade/UF", f"{get_val(d,['Cidade'])}/{get_val(d,['Estado'])}", 10, y, 90)
     pdf.field("E-mail", get_val(d, ["E-mail"]), 105, y, 95)
+    
     y+=15; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(0,5,clean_text("IDENTIFICAÇÃO DA AMOSTRA"),0,1,'L')
     y+=6; pdf.field("Ref. Cliente", get_val(d, ["Indentificação de Amostra"]), 10, y, 190)
     y+=11; pdf.field("Madeira", get_val(d, ["Madeira"]), 10, y, 90)
@@ -187,6 +174,7 @@ def gerar_pdf(d):
     y+=11; pdf.field("Aplicação", get_val(d, ["Aplicação"]), 10, y, 60)
     pdf.field("Norma ABNT", get_val(d, ["Norma"]), 75, y, 60)
     pdf.field("Retenção Esp.", fmt_num(get_val(d, ["Retenção"])), 140, y, 60, align='C')
+    
     y+=20; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(190,6,clean_text("RESULTADOS DE RETENÇÃO"),1,1,'C')
     pdf.set_font('Arial','B',7); x=10; cy=pdf.get_y()
     pdf.cell(40,10,clean_text("Ingredientes ativos"),1,0,'C'); pdf.cell(30,10,clean_text("Resultado (kg/m3)"),1,0,'C')
@@ -195,18 +183,22 @@ def gerar_pdf(d):
     
     kg_cr=fmt_num(get_val(d,["Retenção Cromo","Cromo"])); kg_cu=fmt_num(get_val(d,["Retenção Cobre","Cobre"])); kg_as=fmt_num(get_val(d,["Retenção Arsênio","Arsenio"]))
     pc_cr=fmt_num(get_val(d,["Balanço Cromo","Cromo %"])); pc_cu=fmt_num(get_val(d,["Balanço Cobre","Cobre %"])); pc_as=fmt_num(get_val(d,["Balanço Arsênio","Arsenio %"]))
+    
     pdf.set_font('Arial','',8)
     def row(n,k,p,mn,mx,mt=""):
         pdf.cell(40,6,clean_text(n),1,0,'L'); pdf.cell(30,6,k,1,0,'C'); pdf.cell(30,6,p,1,0,'C')
         pdf.cell(25,6,mn,1,0,'C'); pdf.cell(25,6,mx,1,0,'C'); pdf.cell(40,6,clean_text(mt),1,1,'C')
     row("Cromo (CrO3)",kg_cr,pc_cr,"41,8","53,2","Metodo UFV 01"); row("Cobre (CuO)",kg_cu,pc_cu,"15,2","22,8",""); row("Arsenio (As2O5)",kg_as,pc_as,"27,3","40,7","")
+    
     try: tot = float(kg_cr.replace(",",".")) + float(kg_cu.replace(",",".")) + float(kg_as.replace(",","."))
     except: tot=0
     pdf.set_font('Arial','B',8); pdf.cell(40,6,clean_text("RETENÇÃO TOTAL"),1,0,'L'); pdf.cell(30,6,fmt_num(tot),1,0,'C'); pdf.cell(30,6,"-",1,0,'C'); pdf.cell(90,6,clean_text("Nota: Resultados restritos as amostras"),1,1,'C')
+    
     y=pdf.get_y()+5; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(190,6,clean_text("RESULTADOS DE PENETRAÇÃO"),0,1,'C')
     y+=7; pdf.field("Grau", get_val(d,["Grau"]), 10, y, 30, align='C'); pdf.field("Tipo", get_val(d,["Tipo"]), 45, y, 50, align='C')
     pdf.set_xy(100,y); pdf.set_font('Arial','',6); pdf.cell(90,3,clean_text("Descrição"),0,0,'L')
     pdf.set_xy(100,y+3); pdf.set_font('Arial','',8); pdf.rect(100,y+3,100,12); pdf.multi_cell(100,4,clean_text(get_val(d,["Descrição Penetração","Descricao"])),0,'L')
+    
     y+=20; obs=get_val(d,["Observação","Obs"])
     if obs: pdf.set_y(y); pdf.field("Observações", obs, 10, y, 190, 12, 'L', True)
     pdf.set_y(-35); pdf.set_font('Arial','',9); pdf.cell(0,5,clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"),0,1,'C')
