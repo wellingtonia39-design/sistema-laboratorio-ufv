@@ -21,7 +21,15 @@ def formatar_numero(valor, is_quimico=False):
     try:
         v_str = str(valor).replace(",", ".")
         v_float = float(v_str)
-        if is_quimico and v_float > 100: v_float /= 100.0
+        
+        # Lógica inteligente para porcentagens quebradas
+        if is_quimico:
+            # Se for > 100 (ex: 458), divide por 10.0 (vira 45.8) ou 100 dependendo da grandeza
+            # Assumindo que balanceamento é sempre < 100%
+            if v_float > 100: 
+                v_float /= 10.0 # Tenta dividir por 10 primeiro (458 -> 45.8)
+                if v_float > 100: v_float /= 10.0 # Se ainda for alto, divide de novo
+                
         return v_float
     except: return 0.0
 
@@ -40,16 +48,22 @@ def formatar_data(valor):
     except: return str(valor)
 
 def buscar_valor(dados, chaves_possiveis):
-    # Normaliza as chaves da planilha (minusculo, sem espaços extras)
+    # Cria mapa de chaves normalizadas
     dados_norm = {k.strip().lower(): v for k, v in dados.items()}
     
     for chave in chaves_possiveis:
         k = chave.strip().lower()
+        # Busca exata
         if k in dados_norm:
             val = dados_norm[k]
-            # Se achou mas está vazio, continua procurando
-            if str(val).strip() != "":
-                return val
+            if str(val).strip() != "": return val
+            
+        # Busca parcial (ex: "Grau" acha "Grau de Penetração")
+        for coluna_real in dados_norm.keys():
+            if k in coluna_real:
+                val = dados_norm[coluna_real]
+                if str(val).strip() != "": return val
+                
     return ""
 
 # --- CLASSE PDF ---
@@ -63,17 +77,20 @@ class RelatorioPDF(FPDF):
 
     def footer(self):
         self.set_y(-15)
-        self.set_font('Arial', 'I', 7)
+        self.set_font('Arial', 'I', 6)
         self.cell(0, 10, clean_text(f'Página {self.page_no()}'), 0, 0, 'C')
 
     def campo_form(self, label, valor, x, y, w, h=6, align='L', multi=False):
+        # Label (Fonte tamanho 6)
         self.set_xy(x, y)
-        self.set_font('Arial', '', 7)
+        self.set_font('Arial', '', 6)
         self.cell(w, 3, clean_text(label), 0, 0, 'L')
-        self.set_xy(x, y + 3.5)
-        self.set_font('Arial', '', 9)
+        
+        # Valor (Fonte tamanho 8 - mais compacto)
+        self.set_xy(x, y + 3)
+        self.set_font('Arial', '', 8)
         if multi:
-            self.rect(x, y + 3.5, w, h)
+            self.rect(x, y + 3, w, h)
             self.multi_cell(w, 4, clean_text(valor), 0, align)
         else:
             self.cell(w, h, clean_text(valor), 1, 0, align)
@@ -84,17 +101,17 @@ def gerar_pdf_nativo(dados):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 1. Dados Básicos
-    dt_entrada = formatar_data(buscar_valor(dados, ["Data de entrada", "Entrada", "Data Entrada"]))
-    id_rel = clean_text(buscar_valor(dados, ["Código UFV", "Codigo UFV", "ID", "Codigo"]))
-    dt_emissao = formatar_data(buscar_valor(dados, ["Data de Registro", "Data Emissao", "Emissao", "Fim da análise"]))
+    # --- 1. CABEÇALHO ---
+    dt_entrada = formatar_data(buscar_valor(dados, ["Data de entrada", "Entrada"]))
+    id_rel = clean_text(buscar_valor(dados, ["Código UFV", "ID", "Codigo"]))
+    dt_emissao = formatar_data(buscar_valor(dados, ["Data de Registro", "Emissao", "Fim da análise"]))
 
     y = 30
     pdf.campo_form("Data de Entrada", dt_entrada, 10, y, 40, align='C')
     pdf.campo_form("Número ID", id_rel, 150, y - 5, 50, align='C')
     pdf.campo_form("Data de Emissão", dt_emissao, 150, y + 8, 50, align='C')
 
-    # 2. Cliente
+    # --- 2. CLIENTE ---
     y += 20
     pdf.set_y(y); pdf.set_font('Arial', 'B', 9)
     pdf.cell(0, 5, clean_text("DADOS DO CLIENTE"), 0, 1, 'L')
@@ -106,18 +123,18 @@ def gerar_pdf_nativo(dados):
     y += 11
     cid = clean_text(buscar_valor(dados, ["Cidade", "Municipio"]))
     uf = clean_text(buscar_valor(dados, ["Estado", "UF"]))
-    email = clean_text(buscar_valor(dados, ["E-mail", "Email", "Contato"]))
+    email = clean_text(buscar_valor(dados, ["E-mail", "Email"]))
     
     pdf.campo_form("Cidade/UF", f"{cid}/{uf}", 10, y, 90)
     pdf.campo_form("E-mail", email, 105, y, 95)
 
-    # 3. Amostra
+    # --- 3. AMOSTRA ---
     y += 15
     pdf.set_y(y); pdf.set_font('Arial', 'B', 9)
     pdf.cell(0, 5, clean_text("IDENTIFICAÇÃO DA AMOSTRA"), 0, 1, 'L')
     y += 6
     
-    ref = buscar_valor(dados, ["Indentificação de Amostra do cliente", "Amostra", "Identificacao", "Ref"])
+    ref = buscar_valor(dados, ["Indentificação de Amostra do cliente", "Amostra", "Ref"])
     pdf.campo_form("Ref. Cliente (Amostra)", ref, 10, y, 190)
     
     y += 11
@@ -129,13 +146,13 @@ def gerar_pdf_nativo(dados):
     y += 11
     app = buscar_valor(dados, ["Aplicação", "Aplicacao"])
     norma = buscar_valor(dados, ["Norma ABNT", "Norma"])
-    ret_esp = float_para_str(formatar_numero(buscar_valor(dados, ["Retenção", "Retencao", "Retenção Esp."]), True))
+    ret_esp = float_para_str(formatar_numero(buscar_valor(dados, ["Retenção", "Retenção Esp."]), True))
     
     pdf.campo_form("Aplicação", app, 10, y, 60)
     pdf.campo_form("Norma ABNT", norma, 75, y, 60)
     pdf.campo_form("Retenção Esp.", ret_esp, 140, y, 60, align='C')
 
-    # 4. Química (Tabela)
+    # --- 4. QUÍMICA ---
     y += 20
     pdf.set_y(y); pdf.set_font('Arial', 'B', 9)
     pdf.cell(190, 6, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
@@ -145,7 +162,7 @@ def gerar_pdf_nativo(dados):
     x = 10; cy = pdf.get_y()
     pdf.cell(40, 10, clean_text("Ingredientes ativos"), 1, 0, 'C')
     pdf.cell(30, 10, clean_text("Resultado (kg/m3)"), 1, 0, 'C')
-    pdf.cell(80, 5, clean_text("Balanceamento químico"), 1, 0, 'C') # Bloco maior
+    pdf.cell(80, 5, clean_text("Balanceamento químico"), 1, 0, 'C')
     pdf.set_xy(x+150, cy)
     pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
     
@@ -154,30 +171,26 @@ def gerar_pdf_nativo(dados):
     pdf.cell(50, 5, clean_text("Padrões (Min - Max)"), 1, 0, 'C')
     pdf.set_xy(x, cy+10)
 
-    # Valores
+    # Valores (Busca agressiva)
     pdf.set_font('Arial', '', 8)
     
-    # Busca Valores Kg/m3
-    kg_cr = formatar_numero(buscar_valor(dados, ["Retenção Cromo (Kg/m³)", "Retenção Cromo", "Cromo"]), True)
-    kg_cu = formatar_numero(buscar_valor(dados, ["Retenção Cobre (Kg/m³)", "Retenção Cobre", "Cobre"]), True)
-    kg_as = formatar_numero(buscar_valor(dados, ["Retenção Arsênio (Kg/m³)", "Retenção Arsênio", "Arsenio"]), True)
+    kg_cr = formatar_numero(buscar_valor(dados, ["Retenção Cromo (Kg/m³)", "Retenção Cromo", "Cromo", "Teor de CrO3"]), True)
+    kg_cu = formatar_numero(buscar_valor(dados, ["Retenção Cobre (Kg/m³)", "Retenção Cobre", "Cobre", "Teor de CuO"]), True)
+    kg_as = formatar_numero(buscar_valor(dados, ["Retenção Arsênio (Kg/m³)", "Retenção Arsênio", "Arsenio", "Teor de As2O5"]), True)
 
-    # Busca Porcentagens (Tenta vários nomes)
-    pc_cr = buscar_valor(dados, ["Balanço Cromo (%)", "Balanco Cromo", "Balanceamento Cromo", "Cromo (%)"])
-    pc_cu = buscar_valor(dados, ["Balanço Cobre (%)", "Balanco Cobre", "Balanceamento Cobre", "Cobre (%)"])
-    pc_as = buscar_valor(dados, ["Balanço Arsênio (%)", "Balanco Arsenio", "Balanceamento Arsenio", "Arsenio (%)"])
+    # Porcentagens
+    pc_cr = formatar_numero(buscar_valor(dados, ["Balanço Cromo (%)", "Balanço Cromo", "Cromo %", "Bal. Cr"]), True)
+    pc_cu = formatar_numero(buscar_valor(dados, ["Balanço Cobre (%)", "Balanço Cobre", "Cobre %", "Bal. Cu"]), True)
+    pc_as = formatar_numero(buscar_valor(dados, ["Balanço Arsênio (%)", "Balanço Arsênio", "Arsenio %", "Bal. As"]), True)
     
-    # Busca Total (Ou calcula)
-    val_tot_raw = buscar_valor(dados, ["Soma Concentração (%)", "Retenção Total", "Total", "Soma"])
-    val_tot = formatar_numero(val_tot_raw, True)
-    
-    # Se Total vier zerado, soma os Kgs
-    if val_tot == 0: val_tot = kg_cr + kg_cu + kg_as
+    # Total
+    val_tot = formatar_numero(buscar_valor(dados, ["Soma Concentração (%)", "Retenção Total", "Total"]), True)
+    if val_tot == 0: val_tot = kg_cr + kg_cu + kg_as # Soma se vazio
 
     def row(n, kg, pc, mn, mx, mt=""):
         pdf.cell(40, 6, clean_text(n), 1, 0, 'L')
         pdf.cell(30, 6, float_para_str(kg), 1, 0, 'C')
-        pdf.cell(30, 6, clean_text(str(pc)), 1, 0, 'C')
+        pdf.cell(30, 6, float_para_str(pc) if pc > 0 else "-", 1, 0, 'C')
         pdf.cell(25, 6, mn, 1, 0, 'C')
         pdf.cell(25, 6, mx, 1, 0, 'C')
         pdf.cell(40, 6, clean_text(mt), 1, 1, 'C')
@@ -190,39 +203,41 @@ def gerar_pdf_nativo(dados):
     pdf.set_font('Arial', 'B', 8)
     pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
     pdf.cell(30, 6, float_para_str(val_tot), 1, 0, 'C')
-    pdf.cell(30, 6, "-", 1, 0, 'C')
+    # Cálculo % Total (Soma das %)
+    tot_pc = pc_cr + pc_cu + pc_as
+    pdf.cell(30, 6, float_para_str(tot_pc) if tot_pc > 0 else "-", 1, 0, 'C')
     pdf.cell(90, 6, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
 
-    # 5. Penetração
+    # --- 5. PENETRAÇÃO (Correção Grau) ---
     y = pdf.get_y() + 5
     pdf.set_y(y); pdf.set_font('Arial', 'B', 9)
     pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
     y += 7
     
-    # Tenta chaves agressivas para o Grau
-    grau = buscar_valor(dados, ["Grau de penetração", "Grau", "grau", "Nota", "Classificação", "Grau Penetracao"])
-    tipo = buscar_valor(dados, ["Descrição Grau", "Tipo Grau", "Tipo", "Classificacao"])
+    # Busca Grau (Tenta várias colunas)
+    grau = buscar_valor(dados, ["Grau de penetração", "Grau", "Nota", "G", "Classificação"])
+    tipo = buscar_valor(dados, ["Descrição Grau", "Tipo", "Tipo Penetracao"])
     
     pdf.campo_form("Grau", grau, 10, y, 30, align='C')
     pdf.campo_form("Tipo", tipo, 45, y, 50, align='C')
     
-    desc = buscar_valor(dados, ["Descrição Penetração", "Descricao Penetracao", "Descricao", "Obs Penetracao"])
+    desc = buscar_valor(dados, ["Descrição Penetração", "Descrição", "Obs Penetracao"])
     pdf.set_xy(100, y)
-    pdf.set_font('Arial', '', 7)
+    pdf.set_font('Arial', '', 6)
     pdf.cell(90, 3, clean_text("Descrição"), 0, 0, 'L')
-    pdf.set_xy(100, y+3.5)
+    pdf.set_xy(100, y+3)
     pdf.set_font('Arial', '', 8)
-    pdf.rect(100, y+3.5, 100, 12)
+    pdf.rect(100, y+3, 100, 12)
     pdf.multi_cell(100, 4, clean_text(desc), 0, 'L')
 
-    # 6. Observações
+    # --- 6. OBSERVAÇÕES ---
     y += 20
-    obs = buscar_valor(dados, ["Observação: Analista de Controle de Qualidade", "Observação", "Obs", "Comentarios"])
+    obs = buscar_valor(dados, ["Observação: Analista de Controle de Qualidade", "Observação", "Obs"])
     if obs:
         pdf.set_y(y)
         pdf.campo_form("Observações", obs, 10, y, 190, h=12, multi=True)
 
-    # 7. Assinatura
+    # --- 7. ASSINATURA ---
     pdf.set_y(-35)
     pdf.set_font('Arial', '', 9)
     pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
@@ -238,7 +253,6 @@ def carregar(aba):
         client = gspread.authorize(creds)
         sh = client.open(NOME_PLANILHA_GOOGLE)
         df = pd.DataFrame(sh.worksheet(aba).get_all_records())
-        # Strip nos nomes das colunas
         if not df.empty: df.columns = df.columns.str.strip()
         return df
     except: return pd.DataFrame()
@@ -255,7 +269,7 @@ def salvar(df, aba):
         st.toast("Salvo!")
     except: st.error("Erro Salvar")
 
-# --- LOGIN & APP ---
+# --- MAIN ---
 def main():
     if 'logado' not in st.session_state: st.session_state['logado'] = False
     
@@ -266,18 +280,16 @@ def main():
             u = st.text_input("User"); p = st.text_input("Pass", type="password")
             if st.button("Entrar", type="primary"):
                 try:
-                    # Conexão temporária só para login
                     s = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
                     c = dict(st.secrets["gcp_service_account"])
                     cl = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_dict(c, s))
                     users = pd.DataFrame(cl.open(NOME_PLANILHA_GOOGLE).worksheet("Usuarios").get_all_records()).astype(str)
-                    
                     match = users[(users['Usuario']==u) & (users['Senha']==p)]
                     if not match.empty:
                         st.session_state.update({'logado':True, 'tipo':match.iloc[0]['Tipo'], 'user':u})
                         st.rerun()
-                    else: st.error("Dados incorretos")
-                except: st.error("Erro Conexão Login")
+                    else: st.error("Errado")
+                except: st.error("Erro Conexão")
         return
 
     # Logado
@@ -285,12 +297,10 @@ def main():
     st.sidebar.info(f"👤 {st.session_state['user']} ({tipo})")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
 
-    # DEBUGGER (Use isso se continuar dando erro!)
-    with st.sidebar.expander("🕵️ Espiar Colunas"):
+    # DEBUG: Espiar Colunas
+    with st.sidebar.expander("🕵️ Espiar Colunas (Se falhar)"):
         df_x = carregar("Madeira")
-        if not df_x.empty: 
-            st.write("Colunas detectadas:")
-            st.write(list(df_x.columns))
+        if not df_x.empty: st.write(list(df_x.columns))
 
     st.title("🌲 Sistema UFV")
     menu = st.sidebar.radio("Ir para", ["Madeira Tratada", "Solução", "Dashboard"])
