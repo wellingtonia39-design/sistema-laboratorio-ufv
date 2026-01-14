@@ -7,7 +7,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from fpdf import FPDF
 import io
 import os
-import openpyxl # Importante para preservar formatação
+import openpyxl
 from datetime import datetime
 
 # --- CONFIGURAÇÃO ---
@@ -77,66 +77,72 @@ def to_float(v):
     try: return 0.0 if (pd.isna(v) or str(v).strip()=="") else float(str(v).replace(",", "."))
     except: return 0.0
 
-def corrigir_valores_dataframe(df): return df # Apenas pass-through, a lógica está no cálculo
-
 def aplicar_formulas_excel(df):
     for i, row in df.iterrows():
         try:
-            d1, d2, d3, d4, d5 = to_float(row.get('Diâmetro 1 (mm)')), to_float(row.get('Diâmetro 2 (mm)')), to_float(row.get('Diâmetro 3 (mm)')), to_float(row.get('Diâmetro 4 (mm)')), to_float(row.get('Diâmetro 5 (mm)'))
-            diams = [d for d in [d1,d2,d3,d4,d5] if d > 0]
-            diam_medio_cm = (sum(diams)/len(diams))/10.0 if diams else 0
-            df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
+            # Cálculos de Madeira (Só executa se as colunas existirem)
+            if 'Diâmetro 1 (mm)' in df.columns:
+                d1, d2, d3, d4, d5 = to_float(row.get('Diâmetro 1 (mm)')), to_float(row.get('Diâmetro 2 (mm)')), to_float(row.get('Diâmetro 3 (mm)')), to_float(row.get('Diâmetro 4 (mm)')), to_float(row.get('Diâmetro 5 (mm)'))
+                diams = [d for d in [d1,d2,d3,d4,d5] if d > 0]
+                diam_medio_cm = (sum(diams)/len(diams))/10.0 if diams else 0
+                df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
-            c1, c2, c3, c4, c5 = to_float(row.get('Comprim. 1 (mm)')), to_float(row.get('Comprim. 2 (mm)')), to_float(row.get('Comprim. 3 (mm)')), to_float(row.get('Comprim. 4 (mm)')), to_float(row.get('Comprim. 5 (mm)'))
-            comps = [c for c in [c1,c2,c3,c4,c5] if c > 0]
-            comp_medio_cm = (sum(comps)/len(comps))/10.0 if comps else 0
-            df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
+                c1, c2, c3, c4, c5 = to_float(row.get('Comprim. 1 (mm)')), to_float(row.get('Comprim. 2 (mm)')), to_float(row.get('Comprim. 3 (mm)')), to_float(row.get('Comprim. 4 (mm)')), to_float(row.get('Comprim. 5 (mm)'))
+                comps = [c for c in [c1,c2,c3,c4,c5] if c > 0]
+                comp_medio_cm = (sum(comps)/len(comps))/10.0 if comps else 0
+                df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
 
-            m1, m2, m3, m4, m5 = to_float(row.get('Massa 1 (g)')), to_float(row.get('Massa 2 (g)')), to_float(row.get('Massa 3 (g)')), to_float(row.get('Massa 4 (g)')), to_float(row.get('Massa 5 (g)'))
-            massas = [m for m in [m1,m2,m3,m4,m5] if m > 0]
-            massa_media = sum(massas)/len(massas) if massas else 0
-            df.at[i, 'Massa média (g)'] = round(massa_media, 2)
+                m1, m2, m3, m4, m5 = to_float(row.get('Massa 1 (g)')), to_float(row.get('Massa 2 (g)')), to_float(row.get('Massa 3 (g)')), to_float(row.get('Massa 4 (g)')), to_float(row.get('Massa 5 (g)'))
+                massas = [m for m in [m1,m2,m3,m4,m5] if m > 0]
+                massa_media = sum(massas)/len(massas) if massas else 0
+                df.at[i, 'Massa média (g)'] = round(massa_media, 2)
 
-            dens_kg_m3 = 0
-            if diam_medio_cm > 0 and comp_medio_cm > 0:
-                vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
-                df.at[i, 'Volume (cm³)'] = round(vol, 2)
-                if massa_media > 0:
-                    dens_g_cm3 = massa_media / vol
-                    dens_kg_m3 = dens_g_cm3 * 1000
-                    df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
-                    df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
+                dens_kg_m3 = 0
+                if diam_medio_cm > 0 and comp_medio_cm > 0:
+                    vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
+                    df.at[i, 'Volume (cm³)'] = round(vol, 2)
+                    if massa_media > 0:
+                        dens_g_cm3 = massa_media / vol
+                        dens_kg_m3 = dens_g_cm3 * 1000
+                        df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
+                        df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
+                
+                # Química
+                cr_pct, cu_pct, as_pct = to_float(row.get('Cromo (%)')), to_float(row.get('Cobre (%)')), to_float(row.get('Arsênio (%)'))
+                soma_conc = cr_pct + cu_pct + as_pct
+                df.at[i, 'Soma Concentração'] = round(soma_conc, 2)
 
-            cr_pct, cu_pct, as_pct = to_float(row.get('Cromo (%)')), to_float(row.get('Cobre (%)')), to_float(row.get('Arsênio (%)'))
-            soma_conc = cr_pct + cu_pct + as_pct
-            df.at[i, 'Soma Concentração'] = round(soma_conc, 2)
+                if soma_conc > 0:
+                    df.at[i, 'Balanço Cromo %'] = round((cr_pct/soma_conc)*100, 2)
+                    df.at[i, 'Balanço Cobre %'] = round((cu_pct/soma_conc)*100, 2)
+                    df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
+                    df.at[i, 'Balanço Total'] = 100.00
+                
+                ret_cr = (cr_pct/100)*dens_kg_m3; ret_cu = (cu_pct/100)*dens_kg_m3; ret_as = (as_pct/100)*dens_kg_m3
+                df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
+                df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
+                df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
+                ret_total = ret_cr + ret_cu + ret_as
+                df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
 
-            if soma_conc > 0:
-                df.at[i, 'Balanço Cromo %'] = round((cr_pct/soma_conc)*100, 2)
-                df.at[i, 'Balanço Cobre %'] = round((cu_pct/soma_conc)*100, 2)
-                df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
-                df.at[i, 'Balanço Total'] = 100.00
+                aplicacao = str(row.get('Aplicação', '')).strip()
+                ret_esp = 0.0
+                for k, v in REGRAS_RETENCAO.items():
+                    if k.lower() in aplicacao.lower(): ret_esp = v; break
+                
+                if ret_esp > 0:
+                    df.at[i, 'Retenção'] = ret_esp
+                    df.at[i, 'Retenção Esp.'] = ret_esp
+                    df.at[i, 'Observação'] = TXT_APROVADO if ret_total >= ret_esp else TXT_REPROVADO
             
-            ret_cr = (cr_pct/100)*dens_kg_m3; ret_cu = (cu_pct/100)*dens_kg_m3; ret_as = (as_pct/100)*dens_kg_m3
-            df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
-            df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
-            df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
-            ret_total = ret_cr + ret_cu + ret_as
-            df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
-
-            aplicacao = str(row.get('Aplicação', '')).strip()
-            ret_esp = 0.0
-            for k, v in REGRAS_RETENCAO.items():
-                if k.lower() in aplicacao.lower(): ret_esp = v; break
-            
-            if ret_esp > 0:
-                df.at[i, 'Retenção'] = ret_esp
-                df.at[i, 'Retenção Esp.'] = ret_esp
-                df.at[i, 'Observação'] = TXT_APROVADO if ret_total >= ret_esp else TXT_REPROVADO
-            
-            grau = to_float(row.get('Grau'))
-            if grau > 0 and int(grau) in DESC_GRAU:
-                df.at[i, 'Descrição Grau'], df.at[i, 'Descrição Penetração'] = DESC_GRAU[int(grau)]
+            # --- LÓGICA DO GRAU (UNIVERSAL) ---
+            # Aqui faz a mágica: Lê o número 2 e escreve "Profunda e irregular"
+            if 'Grau' in df.columns:
+                grau = to_float(row.get('Grau'))
+                if grau > 0 and int(grau) in DESC_GRAU:
+                    d_curta, d_longa = DESC_GRAU[int(grau)]
+                    df.at[i, 'Descrição Grau'] = d_curta
+                    df.at[i, 'Descrição Penetração'] = d_longa
 
         except: continue
     return df
@@ -148,57 +154,58 @@ def carregar_excel_drive(aba_nome):
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
-        return corrigir_valores_dataframe(df)
+        
+        # --- FILTRO DE LIMPEZA DE COLUNAS (V52) ---
+        if aba_nome == "Madeira Tratada":
+            # Remove colunas de Solução que não devem estar aqui
+            cols_proibidas = ['pH da solução', 'Densidade  solução (g/cm³)', 'Temperatura', 'Concentração pela tabela']
+            df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
+            
+        elif aba_nome == "Solução Preservativa":
+            # Remove colunas de Madeira
+            cols_proibidas = ['Diâmetro 1 (mm)', 'Diâmetro 2 (mm)', 'Diâmetro 3 (mm)', 'Diâmetro 4 (mm)', 'Diâmetro 5 (mm)',
+                              'Comprim. 1 (mm)', 'Comprim. 2 (mm)', 'Comprim. 3 (mm)', 'Comprim. 4 (mm)', 'Comprim. 5 (mm)',
+                              'Massa 1 (g)', 'Massa 2 (g)', 'Massa 3 (g)', 'Massa 4 (g)', 'Massa 5 (g)',
+                              'Retenção', 'Retenção Esp.']
+            df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
+            
+        return df # Retorna limpo
     except Exception as e: st.error(f"Erro Excel: {e}"); return pd.DataFrame()
 
-# 🔥 NOVA FUNÇÃO DE SALVAMENTO CIRÚRGICO (V51) 🔥
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
-        # 1. Calcula tudo
-        df_final = aplicar_formulas_excel(df_to_save) if aba_nome == "Madeira Tratada" else df_to_save
-        
-        # 2. Baixa o arquivo ORIGINAL (Bytes)
+        df_final = aplicar_formulas_excel(df_to_save)
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         arquivo_original = io.BytesIO(request.execute())
-        
-        # 3. Abre com OPENPYXL (Mantém tudo intacto)
         wb = openpyxl.load_workbook(arquivo_original)
-        if aba_nome not in wb.sheetnames:
-            st.error(f"Aba '{aba_nome}' não existe no Excel original!"); return
+        if aba_nome not in wb.sheetnames: st.error(f"Aba '{aba_nome}' não existe!"); return
         ws = wb[aba_nome]
         
-        # 4. Mapeia as colunas (Nome -> Índice no Excel)
         col_map = {}
-        for col_idx, cell in enumerate(ws[1], 1): # Linha 1 é cabeçalho
+        for col_idx, cell in enumerate(ws[1], 1): 
             if cell.value: col_map[str(cell.value).strip()] = col_idx
             
-        # 5. Mapeia as linhas pelo ID (Código UFV) para saber onde atualizar
         col_id_idx = col_map.get("Código UFV")
-        if not col_id_idx: st.error("Coluna 'Código UFV' não encontrada no Excel!"); return
+        if not col_id_idx: st.error("Coluna 'Código UFV' não encontrada!"); return
         
         excel_rows = {}
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
             val_id = row[col_id_idx - 1]
             if val_id: excel_rows[str(val_id).strip()] = row_idx
             
-        # 6. Atualiza APENAS as células alteradas
         for index, row_df in df_final.iterrows():
             codigo = str(row_df['Código UFV']).strip()
             linha_excel = excel_rows.get(codigo)
-            
             if linha_excel:
                 for col_name_df, valor_novo in row_df.items():
                     col_idx_excel = col_map.get(col_name_df)
-                    if col_idx_excel:
-                        # Grava o valor na célula exata
-                        ws.cell(row=linha_excel, column=col_idx_excel, value=valor_novo)
+                    if col_idx_excel: ws.cell(row=linha_excel, column=col_idx_excel, value=valor_novo)
         
-        # 7. Salva e Upload
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=ID_ARQUIVO_EXCEL, media_body=media, supportsAllDrives=True).execute()
-        st.toast("Salvo! Formatação Preservada.", icon="🛡️"); st.cache_data.clear()
+        st.toast("Cálculos Realizados e Salvos!", icon="✅"); st.cache_data.clear()
         
     except Exception as e: st.error(f"Erro Salvar V51: {e}")
 
@@ -324,13 +331,15 @@ def main():
                     if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
                         df.update(df_editado_parcial)
                         salvar_excel_drive(df, "Madeira Tratada")
-                        st.success("Dados mesclados, calculados e salvos!")
+                        st.success("Dados calculados! O sistema irá recarregar para mostrar as descrições.")
+                        st.rerun() # Atualiza a tela para mostrar os textos do Grau
             else:
                 with col_info: st.info("Mostrando tabela completa.")
                 df_editado_total = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="tabela_completa")
                 if st.session_state['user'] in ["admin", "Lpm"]:
                     if st.button("🧮 CALCULAR E SALVAR TUDO", type="primary"): 
                         salvar_excel_drive(df_editado_total, "Madeira Tratada")
+                        st.rerun()
             current_df = df_editado_parcial if numero_busca else df_editado_total
             sel = current_df[current_df["Selecionar"]==True]
             st.divider()
