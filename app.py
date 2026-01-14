@@ -10,10 +10,13 @@ from datetime import datetime
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
-NOME_ARQUIVO_EXCEL = "Planilha controle UFV.xlsx"
 
-# ✅ ID DO DRIVE COMPARTILHADO (JÁ CONFIGURADO)
-ID_PASTA_RAIZ = "0AOsS0ew45LNdUk9PVA" 
+# ✅ 1. ID DA NOVA PLANILHA (Extraído do seu link)
+# O robô vai abrir direto este arquivo, sem precisar procurar pelo nome.
+ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
+
+# ✅ 2. ID DA NOVA PASTA DO DRIVE COMPARTILHADO
+ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
 
 # --- CONEXÃO DRIVE ---
 def get_drive_service():
@@ -21,23 +24,9 @@ def get_drive_service():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return build('drive', 'v3', credentials=creds)
 
-def encontrar_id_arquivo(service, nome_arquivo):
-    # Procura arquivo em TODOS os drives (Pessoal e Compartilhado)
-    query = f"name = '{nome_arquivo}' and trashed = false"
-    try:
-        results = service.files().list(
-            q=query, 
-            fields="files(id, name)", 
-            supportsAllDrives=True, 
-            includeItemsFromAllDrives=True
-        ).execute()
-        items = results.get('files', [])
-        return items[0]['id'] if items else None
-    except: return None
-
-# --- GERENCIADOR DE PASTAS (MODO DRIVE COMPARTILHADO) ---
+# --- GERENCIADOR DE PASTAS (DRIVE COMPARTILHADO) ---
 def get_or_create_folder(service, folder_name, parent_id):
-    # 1. Tenta achar a pasta
+    # Procura a pasta
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
     results = service.files().list(
         q=query, 
@@ -50,7 +39,7 @@ def get_or_create_folder(service, folder_name, parent_id):
     if items:
         return items[0]['id']
     else:
-        # 2. Se não achar, cria (com permissão de Drive Compartilhado)
+        # Cria a pasta se não existir
         metadata = {
             'name': folder_name,
             'mimeType': 'application/vnd.google-apps.folder',
@@ -71,7 +60,7 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
 
         service = get_drive_service()
         
-        # Lógica de Data
+        # Lógica de Data (Ano/Mês)
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 
                  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         
@@ -88,15 +77,14 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         ano_str = str(data_obj.year)
         mes_str = meses[data_obj.month]
         
-        # Criação de Pastas (Ano > Mês) dentro do Drive Compartilhado
+        # Navegação nas Pastas
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
         mes_id = get_or_create_folder(service, mes_str, ano_id)
         
-        # Upload do Arquivo
+        # Upload
         nome_limpo = nome_arquivo.replace("/", "-").replace("\\", "-")
         arquivo_buffer = io.BytesIO(pdf_bytes)
         
-        # Resumable=False é essencial aqui
         media = MediaIoBaseUpload(arquivo_buffer, mimetype='application/pdf', resumable=False)
         metadata = {
             'name': nome_limpo,
@@ -117,8 +105,8 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     except Exception as e:
         erro = str(e)
         st.error(f"Erro ao salvar: {erro}")
-        if "storageQuotaExceeded" in erro:
-            st.warning("Ainda deu erro de cota? Verifique se o ID inserido é realmente de um DRIVE COMPARTILHADO.")
+        if "storageQuotaExceeded" in erro or "403" in erro:
+            st.warning("Dica: Verifique se você deu permissão de 'Administrador de Conteúdo' para o robô no Drive Compartilhado.")
 
 # --- INTELIGÊNCIA MATEMÁTICA ---
 def corrigir_numero_individual(v):
@@ -137,34 +125,38 @@ def corrigir_valores_dataframe(df):
             if alvo.lower() in col.lower(): df[col] = df[col].apply(corrigir_numero_individual)
     return df
 
-# --- CARREGAMENTO ---
+# --- CARREGAMENTO DO EXCEL (AGORA USANDO ID DIRETO) ---
 @st.cache_data(ttl=60)
 def carregar_excel_drive(aba_nome):
     try:
         service = get_drive_service()
-        fid = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
-        if not fid: 
-            st.error(f"Arquivo '{NOME_ARQUIVO_EXCEL}' não encontrado.")
-            return pd.DataFrame()
-        request = service.files().get_media(fileId=fid)
+        # Não precisa mais procurar pelo nome, vai direto no ID
+        request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
+        
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
         return corrigir_valores_dataframe(df)
     except Exception as e:
         st.error(f"Erro ao carregar Excel: {e}")
+        st.info("Verifique se você compartilhou a planilha nova com o e-mail do robô.")
         return pd.DataFrame()
 
 def salvar_excel_drive(df, aba_nome):
     try:
         service = get_drive_service()
-        fid = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
-        if not fid: return
+        
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as writer: df.to_excel(writer, sheet_name=aba_nome, index=False)
         buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
-        service.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-        st.toast("Excel Salvo!", icon="💾"); st.cache_data.clear()
+        
+        service.files().update(
+            fileId=ID_ARQUIVO_EXCEL, # ID Fixo
+            media_body=media, 
+            supportsAllDrives=True
+        ).execute()
+        
+        st.toast("Excel Atualizado!", icon="💾"); st.cache_data.clear()
     except Exception as e: st.error(f"Erro salvar Excel: {e}")
 
 # --- PDF HELPERS ---
