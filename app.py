@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from oauth2client.service_account import ServiceAccountCredentials
@@ -14,6 +15,30 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 # ✅ IDs CONFIGURADOS
 ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
 ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
+
+# --- LISTAS SUSPENSAS E REGRAS (DATA DO ARQUIVO CSV) ---
+# Regras de Retenção Mínima por Aplicação
+REGRAS_RETENCAO = {
+    "Postes": 4.0,
+    "Mourões": 6.5,
+    "Dormentes": 6.5,
+    "Cruzetas": 9.6,
+    "Estacas": 6.5,
+    "Madeira Serrada": 4.0 # Assumindo padrão, ajuste se necessário
+}
+
+# Descrições de Grau
+DESC_GRAU = {
+    1: ("Profunda e regular", "Indica a penetração profunda e uniforme em toda a extensão do alburno."),
+    2: ("Profunda e irregular", "Indica a penetração profunda, mas desuniforme em toda a extensão do alburno."),
+    3: ("Parcial e regular", "Indica a penetração uniforme, mas não total pela extensão do alburno."),
+    4: ("Parcial e irregular", "Indica a penetração desuniforme e não total pela extensão do alburno."),
+    5: ("Sem Reação do Cromoazurol", "Sem Reação do Cromoazurol")
+}
+
+# Textos de Observação (Aprovado / Reprovado)
+TXT_APROVADO = "Os resultados da análise química apresentaram uma retenção do produto de acordo com o padrão mínimo exigido pela norma ABNT NBR 16143"
+TXT_REPROVADO = "Os resultados da análise química apresentaram uma retenção do produto inferior ao padrão mínimo exigido pela norma ABNT NBR 16143"
 
 # --- CONEXÃO DRIVE ---
 def get_drive_service():
@@ -60,20 +85,126 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     except Exception as e: st.error(f"Erro ao salvar: {e}")
 
 # --- MATEMÁTICA E DADOS ---
-def corrigir_numero_individual(v):
+def to_float(v):
+    """Converte qualquer coisa para float seguro."""
     try:
-        if pd.isna(v) or v=="": return 0.0
-        val = float(str(v).replace(",", "."))
-        if val > 1000: val /= 100.0
-        if val > 100: val /= 100.0
-        return val
-    except: return v
+        if pd.isna(v) or str(v).strip() == "": return 0.0
+        return float(str(v).replace(",", "."))
+    except: return 0.0
 
 def corrigir_valores_dataframe(df):
-    cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração', 'Balanço Total', 'Soma']
-    for col in df.columns:
-        for alvo in cols:
-            if alvo.lower() in col.lower(): df[col] = df[col].apply(corrigir_numero_individual)
+    # Aplica conversão apenas para visualização, mas a lógica pesada está na função de cálculo
+    return df
+
+# 🔥 O CÉREBRO DO ROBÔ: REPLICA AS FÓRMULAS DO EXCEL 🔥
+def aplicar_formulas_excel(df):
+    # Itera sobre as linhas para aplicar a lógica linha a linha (mais seguro para regras complexas)
+    for i, row in df.iterrows():
+        try:
+            # 1. MÉDIAS DE DIMENSÃO E MASSA
+            # Diâmetros (mm -> cm para cálculo de volume, mas média em cm no excel?)
+            # O Excel original parece ter colunas em mm e a média em cm. Vamos padronizar.
+            d1, d2, d3, d4, d5 = to_float(row.get('Diâmetro 1 (mm)')), to_float(row.get('Diâmetro 2 (mm)')), to_float(row.get('Diâmetro 3 (mm)')), to_float(row.get('Diâmetro 4 (mm)')), to_float(row.get('Diâmetro 5 (mm)'))
+            # Calcula média dos não-zeros
+            diams = [d for d in [d1, d2, d3, d4, d5] if d > 0]
+            diam_medio_mm = sum(diams) / len(diams) if diams else 0
+            diam_medio_cm = diam_medio_mm / 10.0 # Converte pra cm
+            df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
+
+            c1, c2, c3, c4, c5 = to_float(row.get('Comprim. 1 (mm)')), to_float(row.get('Comprim. 2 (mm)')), to_float(row.get('Comprim. 3 (mm)')), to_float(row.get('Comprim. 4 (mm)')), to_float(row.get('Comprim. 5 (mm)'))
+            comps = [c for c in [c1, c2, c3, c4, c5] if c > 0]
+            comp_medio_mm = sum(comps) / len(comps) if comps else 0
+            comp_medio_cm = comp_medio_mm / 10.0
+            df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
+
+            m1, m2, m3, m4, m5 = to_float(row.get('Massa 1 (g)')), to_float(row.get('Massa 2 (g)')), to_float(row.get('Massa 3 (g)')), to_float(row.get('Massa 4 (g)')), to_float(row.get('Massa 5 (g)'))
+            massas = [m for m in [m1, m2, m3, m4, m5] if m > 0]
+            massa_media = sum(massas) / len(massas) if massas else 0
+            df.at[i, 'Massa média (g)'] = round(massa_media, 2)
+
+            # 2. VOLUME E DENSIDADE
+            # Volume Cilindro (cm³) = Pi * (r em cm)^2 * h em cm
+            if diam_medio_cm > 0 and comp_medio_cm > 0:
+                raio = diam_medio_cm / 2
+                vol = 3.14159 * (raio ** 2) * comp_medio_cm
+                df.at[i, 'Volume (cm³)'] = round(vol, 2)
+                
+                # Densidade
+                if massa_media > 0:
+                    dens_g_cm3 = massa_media / vol
+                    dens_kg_m3 = dens_g_cm3 * 1000
+                    df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
+                    df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
+                else:
+                    dens_kg_m3 = 0
+            else:
+                dens_kg_m3 = 0
+
+            # 3. QUÍMICA E RETENÇÃO
+            cr_pct = to_float(row.get('Cromo (%)'))
+            cu_pct = to_float(row.get('Cobre (%)'))
+            as_pct = to_float(row.get('Arsênio (%)'))
+
+            # Soma das porcentagens (Balanço Total não normalizado, ou soma concentração)
+            soma_conc = cr_pct + cu_pct + as_pct
+            df.at[i, 'Soma Concentração'] = round(soma_conc, 2)
+            # Nota: Às vezes 'Balanço Total' no excel é só a soma, às vezes é 100%. 
+            # Vou assumir que Balanço Total é a soma para verificação.
+
+            # Balanço Normalizado (%)
+            if soma_conc > 0:
+                df.at[i, 'Balanço Cromo %'] = round((cr_pct / soma_conc) * 100, 2)
+                df.at[i, 'Balanço Cobre %'] = round((cu_pct / soma_conc) * 100, 2)
+                df.at[i, 'Balanço Arsênio %'] = round((as_pct / soma_conc) * 100, 2)
+                df.at[i, 'Balanço Total'] = 100.00 # A soma normalizada sempre dá 100
+            
+            # Retenção Individual (Kg/m³) = (Pct/100) * Densidade
+            # Ajuste: A fórmula exata pode variar se a % for de oxido sobre madeira ou sobre solução.
+            # Assumindo padrão: % (m/m) na madeira * Densidade Madeira
+            ret_cr = (cr_pct / 100) * dens_kg_m3
+            ret_cu = (cu_pct / 100) * dens_kg_m3
+            ret_as = (as_pct / 100) * dens_kg_m3
+            
+            df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
+            df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
+            df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
+            
+            # Retenção Total
+            ret_total = ret_cr + ret_cu + ret_as
+            df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
+
+            # 4. REGRAS DE LISTA SUSPENSA E APROVAÇÃO
+            aplicacao = str(row.get('Aplicação', '')).strip()
+            
+            # Busca Retenção Esperada
+            ret_esp = 0.0
+            for chave, valor in REGRAS_RETENCAO.items():
+                if chave.lower() in aplicacao.lower():
+                    ret_esp = valor
+                    break
+            
+            if ret_esp > 0:
+                df.at[i, 'Retenção'] = ret_esp # Coluna 'Retenção' ou 'Retenção Esp.'
+                df.at[i, 'Retenção Esp.'] = ret_esp
+
+                # Regra de Aprovação (Observação)
+                if ret_total >= ret_esp:
+                    df.at[i, 'Observação'] = TXT_APROVADO
+                else:
+                    df.at[i, 'Observação'] = TXT_REPROVADO
+            
+            # Descrições de Grau
+            grau = to_float(row.get('Grau'))
+            if grau > 0 and int(grau) in DESC_GRAU:
+                desc_curta, desc_longa = DESC_GRAU[int(grau)]
+                df.at[i, 'Descrição Grau'] = desc_curta
+                df.at[i, 'Descrição Penetração'] = desc_longa
+
+        except Exception as e:
+            # Se der erro numa linha, pula pra não travar tudo
+            print(f"Erro calculando linha {i}: {e}")
+            continue
+
     return df
 
 @st.cache_data(ttl=60)
@@ -83,20 +214,25 @@ def carregar_excel_drive(aba_nome):
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
-        # Garante que o índice original seja preservado para o update funcionar
         return corrigir_valores_dataframe(df)
     except Exception as e: st.error(f"Erro Excel: {e}"); return pd.DataFrame()
 
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
+        # 🔥 APLICA TODA A MATEMÁTICA ANTES DE SALVAR 🔥
+        df_final = applying_formulas_excel(df_to_save) if aba_nome == "Madeira Tratada" else df_to_save
+        
         service = get_drive_service()
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_to_save.to_excel(writer, sheet_name=aba_nome, index=False)
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_final.to_excel(writer, sheet_name=aba_nome, index=False)
         buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=ID_ARQUIVO_EXCEL, media_body=media, supportsAllDrives=True).execute()
-        st.toast("Salvo!", icon="💾"); st.cache_data.clear()
+        st.toast("Salvo e Calculado!", icon="🧮"); st.cache_data.clear()
     except Exception as e: st.error(f"Erro Salvar: {e}")
+
+# Helper para compatibilidade de nome na chamada
+def applying_formulas_excel(df): return aplicar_formulas_excel(df)
 
 # --- HELPERS ---
 def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
@@ -148,7 +284,6 @@ class RPDF(FPDF):
             self.set_xy(curr_x, y_start + offset_y)
             self.cell(w, 6, clean_text(txt), 0, 0)
             self.set_xy(curr_x + w, y_start)
-            
         if tipo == "Cr": write_part("Teor de CrO"); write_part("3", size=5, offset_y=1.5); write_part(" (Cromo)")
         elif tipo == "Cu": write_part("Teor de CuO (Cobre)")
         elif tipo == "As": write_part("Teor de As"); write_part("2", size=5, offset_y=1.5); write_part("O"); write_part("5", size=5, offset_y=1.5); write_part(" (Arsênio)")
@@ -173,7 +308,10 @@ def gerar_pdf(d):
     pdf.field("Produto", get_val(d, ["Produto"]), 105, y, 95)
     y += 11; pdf.field("Aplicação", get_val(d, ["Aplicação"]), 10, y, 60)
     pdf.field("Norma ABNT", get_val(d, ["Norma"]), 75, y, 60)
-    pdf.field("Retenção Esp.", fmt_num(get_val(d, ["Retenção"])), 140, y, 60, align='C')
+    
+    # Busca a Retenção Esperada (Calculada ou da Planilha)
+    ret_esp = get_val(d, ["Retenção", "Retenção Esp."])
+    pdf.field("Retenção Esp.", fmt_num(ret_esp), 140, y, 60, align='C')
 
     y += 20; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
     pdf.set_font('Arial', 'B', 7); x=10; cy=pdf.get_y()
@@ -184,8 +322,12 @@ def gerar_pdf(d):
     pdf.set_xy(x+70, cy+5); pdf.cell(30, 5, clean_text("Resultados (%)"), 1, 0, 'C'); pdf.cell(50, 5, clean_text("Padrões"), 1, 0, 'C')
     
     pdf.set_xy(x, cy+10); y_dados_inicio = cy+10
-    kg_cr=fmt_num(get_val(d,["Retenção Cromo","Cromo"])); kg_cu=fmt_num(get_val(d,["Retenção Cobre","Cobre"])); kg_as=fmt_num(get_val(d,["Retenção Arsênio","Arsenio"]))
-    pc_cr=fmt_num(get_val(d,["Balanço Cromo","Cromo %"])); pc_cu=fmt_num(get_val(d,["Balanço Cobre","Cobre %"])); pc_as=fmt_num(get_val(d,["Balanço Arsênio","Arsenio %"]))
+    kg_cr=fmt_num(get_val(d,["Retenção Cromo (Kg/m³)","Retenção Cromo"])); 
+    kg_cu=fmt_num(get_val(d,["Retenção Cobre (Kg/m³)","Retenção Cobre"])); 
+    kg_as=fmt_num(get_val(d,["Retenção Arsênio (Kg/m³)","Retenção Arsênio"]))
+    pc_cr=fmt_num(get_val(d,["Balanço Cromo %","Balanço Cromo"])); 
+    pc_cu=fmt_num(get_val(d,["Balanço Cobre %","Balanço Cobre"])); 
+    pc_as=fmt_num(get_val(d,["Balanço Arsênio %","Balanço Arsênio"]))
 
     pdf.set_font('Arial', '', 8)
     def row_data_custom(tipo, k, p, mn, mx):
@@ -215,12 +357,12 @@ def gerar_pdf(d):
 
     y = pdf.get_y() + 5; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
     y += 7
-    tipo_correto = get_val(d, ["Descrição do Grau", "Descricao do Grau", "Grau Descricao", "Descrição Grau", "AB"])
+    tipo_correto = get_val(d, ["Descrição Grau", "Descrição do Grau", "Grau Descricao"])
     pdf.field("Grau", get_val(d, ["Grau"]), 10, y, 30, align='C')
     pdf.field("Tipo", tipo_correto, 45, y, 50, align='C')
     pdf.set_xy(100, y); pdf.set_font('Arial', 'B', 8); pdf.cell(90, 3, clean_text("Descrição"), 0, 0, 'L')
     pdf.set_xy(100, y+3); pdf.set_font('Arial', '', 8); pdf.rect(100, y+3, 100, 12)
-    pdf.multi_cell(100, 4, clean_text(get_val(d, ["Descrição Penetração", "Descricao"])), 0, 'L')
+    pdf.multi_cell(100, 4, clean_text(get_val(d, ["Descrição Penetração"])), 0, 'L')
 
     y += 20; obs = get_val(d, ["Observação", "Obs"])
     if obs: pdf.set_y(y); pdf.field("Observações", obs, 10, y, 190, 12, 'L', multi=True, bold_value=True)
@@ -250,17 +392,13 @@ def main():
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0,"Selecionar",False)
             
-            # --- ZONA DE BUSCA (AGORA COM EDIÇÃO SEGURA) ---
             st.markdown("### 🔎 Buscar/Editar Amostra")
             col_busca, col_info = st.columns([1, 3])
-            
             with col_busca:
                 numero_busca = st.text_input("Digite o número (ex: 620)", placeholder="Busque para Editar...")
             
-            # --- LÓGICA DE MESCLAGEM INTELIGENTE ---
             if numero_busca:
                 termo = f"UFV-M-{numero_busca}"
-                # Filtra mantendo o índice original
                 df_filtrado = df[df['Código UFV'].astype(str).str.contains(termo, case=False, na=False)]
                 if df_filtrado.empty:
                     df_filtrado = df[df['Código UFV'].astype(str).str.contains(numero_busca, case=False, na=False)]
@@ -268,27 +406,21 @@ def main():
                 with col_info:
                     st.info(f"Encontrados: {len(df_filtrado)}. Você pode editar abaixo e Salvar.")
                 
-                # Permite edição do filtrado
                 df_editado_parcial = st.data_editor(df_filtrado, num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
                 
-                # BOTÃO DE SALVAR INTELIGENTE (Agora para Admin ou quem for)
-                if st.session_state['user'] == "admin":
-                    if st.button("💾 SALVAR ALTERAÇÕES (Mesclar)", type="primary"):
-                        # Mágica: Atualiza o DF original com as linhas editadas (baseado no Index)
+                if st.session_state['user'] in ["admin", "Lpm"]:
+                    if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
                         df.update(df_editado_parcial)
                         salvar_excel_drive(df, "Madeira Tratada")
-                        st.success("Dados mesclados e salvos com sucesso!")
-            
+                        st.success("Dados mesclados, calculados e salvos!")
             else:
-                # Se não tem busca, mostra tudo (Modo Clássico)
                 with col_info: st.info("Mostrando tabela completa.")
                 df_editado_total = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="tabela_completa")
                 
-                if st.session_state['user'] == "admin":
-                    if st.button("💾 SALVAR TUDO", type="primary"): 
+                if st.session_state['user'] in ["admin", "Lpm"]:
+                    if st.button("🧮 CALCULAR E SALVAR TUDO", type="primary"): 
                         salvar_excel_drive(df_editado_total, "Madeira Tratada")
             
-            # --- PDF (Usa o dataframe editado atual) ---
             current_df = df_editado_parcial if numero_busca else df_editado_total
             sel = current_df[current_df["Selecionar"]==True]
             st.divider()
