@@ -271,8 +271,8 @@ def main():
                 # Permite edição do filtrado
                 df_editado_parcial = st.data_editor(df_filtrado, num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
                 
-                # BOTÃO DE SALVAR INTELIGENTE
-                if st.session_state['tipo']=="Lpm":
+                # BOTÃO DE SALVAR INTELIGENTE (Agora para Admin ou quem for)
+                if st.session_state['user'] == "admin":
                     if st.button("💾 SALVAR ALTERAÇÕES (Mesclar)", type="primary"):
                         # Mágica: Atualiza o DF original com as linhas editadas (baseado no Index)
                         df.update(df_editado_parcial)
@@ -284,7 +284,7 @@ def main():
                 with col_info: st.info("Mostrando tabela completa.")
                 df_editado_total = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="tabela_completa")
                 
-                if st.session_state['tipo']=="Lpm":
+                if st.session_state['user'] == "admin":
                     if st.button("💾 SALVAR TUDO", type="primary"): 
                         salvar_excel_drive(df_editado_total, "Madeira Tratada")
             
