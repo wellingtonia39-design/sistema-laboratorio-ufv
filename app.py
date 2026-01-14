@@ -117,53 +117,58 @@ def get_val(d, keys):
             if k in c and str(dn[c]).strip()!="": return dn[c]
     return ""
 
-# --- CLASSE PDF ---
+# --- CLASSE PDF (RENOVADA) ---
 class RPDF(FPDF):
     def header(self):
-        # 1. Ajuste de Logos
         if os.path.exists("logo_ufv.png"): self.image("logo_ufv.png", 10, 8, 25)
-        # Montana AUMENTADA para 40 e movida para X=160
-        if os.path.exists("logo_montana.png"): self.image("logo_montana.png", 160, 8, 40) 
+        # Montana AUMENTADA para 45mm e ajustada
+        if os.path.exists("logo_montana.png"): self.image("logo_montana.png", 155, 8, 45) 
         self.set_y(12); self.set_font('Arial','B',14); self.cell(0,10,clean_text('Relatório de Ensaio'),0,1,'C')
     
     def footer(self):
         self.set_y(-15); self.set_font('Arial','I',6); self.cell(0,10,clean_text(f'Página {self.page_no()}'),0,0,'C')
     
     def field(self, label, valor, x, y, w, h=6, align='L', multi=False, bold_value=False):
-        self.set_xy(x, y)
-        self.set_font('Arial', 'B', 8)
-        self.cell(w, 3, clean_text(label), 0, 0, 'L')
+        self.set_xy(x, y); self.set_font('Arial', 'B', 8); self.cell(w, 3, clean_text(label), 0, 0, 'L')
         self.set_xy(x, y+3)
         if bold_value: self.set_font('Arial', 'B', 8)
         else: self.set_font('Arial', '', 8)
-        if multi: 
-            self.rect(x, y+3, w, h); self.multi_cell(w, 4, clean_text(valor), 0, align)
-        else: 
-            self.cell(w, h, clean_text(valor), 1, 0, align)
+        if multi: self.rect(x, y+3, w, h); self.multi_cell(w, 4, clean_text(valor), 0, align)
+        else: self.cell(w, h, clean_text(valor), 1, 0, align)
 
-    # --- FUNÇÃO NOVA: DESENHAR QUÍMICA COM SUBSCRITO ---
+    # --- FUNÇÃO NOVA: SUBSCRITO MANUAL SEGURO ---
+    # Escreve pedacinho por pedacinho para não quebrar o layout
     def draw_chem_label(self, tipo):
-        x, y = self.get_x(), self.get_y()
+        x_start, y_start = self.get_x(), self.get_y()
         self.set_font('Arial', '', 8)
         
+        # Helper para escrever e avançar o cursor manualmente
+        def write_part(txt, size=8, offset_y=0):
+            self.set_font('Arial', '', size)
+            w = self.get_string_width(txt)
+            curr_x = self.get_x()
+            self.set_xy(curr_x, y_start + offset_y)
+            self.cell(w, 6, clean_text(txt), 0, 0)
+            self.set_xy(curr_x + w, y_start) # Volta Y pro normal, avança X
+            
         if tipo == "Cr":
-            self.write(6, clean_text("Teor de CrO"))
-            self.set_font('Arial', '', 5); self.set_y(y+1.5); self.write(6, "3"); self.set_y(y) # Subscrito
-            self.set_font('Arial', '', 8); self.write(6, clean_text(" (Cromo)"))
+            write_part("Teor de CrO")
+            write_part("3", size=5, offset_y=1.5) # Sub
+            write_part(" (Cromo)")
         
         elif tipo == "Cu":
-            self.write(6, clean_text("Teor de CuO (Cobre)"))
+            write_part("Teor de CuO (Cobre)")
             
         elif tipo == "As":
-            self.write(6, clean_text("Teor de As"))
-            self.set_font('Arial', '', 5); self.set_y(y+1.5); self.write(6, "2"); self.set_y(y) # Sub 2
-            self.set_font('Arial', '', 8); self.write(6, "O")
-            self.set_font('Arial', '', 5); self.set_y(y+1.5); self.write(6, "5"); self.set_y(y) # Sub 5
-            self.set_font('Arial', '', 8); self.write(6, clean_text(" (Arsênio)"))
+            write_part("Teor de As")
+            write_part("2", size=5, offset_y=1.5)
+            write_part("O")
+            write_part("5", size=5, offset_y=1.5)
+            write_part(" (Arsênio)")
             
-        # Desenha a borda da célula por cima de tudo
-        self.set_xy(x, y)
-        self.cell(40, 6, "", 1, 0)
+        # Desenha a borda final da célula (Reseta posição para garantir alinhamento)
+        self.set_xy(x_start, y_start)
+        self.cell(40, 6, "", 1, 0) # Borda e avança cursor +40
 
 def gerar_pdf(d):
     pdf = RPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
@@ -197,8 +202,6 @@ def gerar_pdf(d):
     pdf.cell(40, 10, clean_text("Ingredientes ativos"), 1, 0, 'C')
     pdf.cell(30, 10, clean_text("Resultado (kg/m3)"), 1, 0, 'C')
     pdf.cell(80, 5, clean_text("Balanceamento químico"), 1, 0, 'C')
-    
-    # Método (Mesclado)
     pdf.set_xy(x+150, cy); pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
     
     # Sub-cabeçalhos
@@ -212,7 +215,6 @@ def gerar_pdf(d):
     kg_cr=fmt_num(get_val(d,["Retenção Cromo","Cromo"]))
     kg_cu=fmt_num(get_val(d,["Retenção Cobre","Cobre"]))
     kg_as=fmt_num(get_val(d,["Retenção Arsênio","Arsenio"]))
-    
     pc_cr=fmt_num(get_val(d,["Balanço Cromo","Cromo %"]))
     pc_cu=fmt_num(get_val(d,["Balanço Cobre","Cobre %"]))
     pc_as=fmt_num(get_val(d,["Balanço Arsênio","Arsenio %"]))
@@ -220,37 +222,34 @@ def gerar_pdf(d):
     pdf.set_font('Arial', '', 8)
     
     def row_data_custom(tipo, k, p, mn, mx):
-        # 1. Desenha o Label com Subscrito Customizado
+        # 1. Desenha o Label com Subscrito (O cursor avança +40 automaticamente dentro da função)
         pdf.draw_chem_label(tipo)
-        # Move para o lado (40)
-        pdf.set_x(pdf.get_x() + 40)
+        # NÃO FAZEMOS MAIS set_x(+40) AQUI, POIS O draw_chem_label JÁ FEZ ISSO
         
         pdf.cell(30, 6, k, 1, 0, 'C')
         pdf.cell(30, 6, p, 1, 0, 'C')
         pdf.cell(25, 6, mn, 1, 0, 'C')
         pdf.cell(25, 6, mx, 1, 0, 'C')
+        # Pula a coluna método e vai pra próxima linha
         pdf.set_x(pdf.get_x() + 40); pdf.ln(6)
 
     # Coluna Método Gigante
     pdf.set_xy(160, y_dados_inicio)
     pdf.cell(40, 18, clean_text("Metodo UFV 01"), 1, 0, 'C')
     
-    # Linhas de Dados (Agora chama a função customizada)
+    # Linhas de Dados
     pdf.set_xy(10, y_dados_inicio)
     row_data_custom("Cr", kg_cr, pc_cr, "41,8", "53,2")
     row_data_custom("Cu", kg_cu, pc_cu, "15,2", "22,8")
     row_data_custom("As", kg_as, pc_as, "27,3", "40,7")
 
-    # Linha Total (SOMA FORÇADA)
+    # Linha Total
     try: tot_kg = float(kg_cr.replace(",",".")) + float(kg_cu.replace(",",".")) + float(kg_as.replace(",","."))
     except: tot_kg = 0
-    
-    # Soma dos PERCENTUAIS (Garantir 100%)
     try:
         soma_pct = float(pc_cr.replace(",",".")) + float(pc_cu.replace(",",".")) + float(pc_as.replace(",","."))
-        bm_total = fmt_num(soma_pct) # Deve dar 100.00
-    except: 
-        bm_total = "100,00"
+        bm_total = fmt_num(soma_pct)
+    except: bm_total = "100,00"
 
     pdf.set_font('Arial', 'B', 8)
     pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
