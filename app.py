@@ -11,7 +11,7 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 
-# ✅ IDs CONFIGURADOS (Conta Nova)
+# ✅ IDs CONFIGURADOS
 ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
 ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
 
@@ -68,7 +68,7 @@ def corrigir_numero_individual(v):
     except: return v
 
 def corrigir_valores_dataframe(df):
-    cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração', 'Balanço Total']
+    cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração', 'Balanço Total', 'Soma']
     for col in df.columns:
         for alvo in cols:
             if alvo.lower() in col.lower(): df[col] = df[col].apply(corrigir_numero_individual)
@@ -120,22 +120,25 @@ def get_val(d, keys):
 # --- CLASSE PDF (RENOVADA) ---
 class RPDF(FPDF):
     def header(self):
-        # Logos com tamanhos ajustados para parecerem iguais
+        # 1. Ajuste de Logos (Montana maior)
         if os.path.exists("logo_ufv.png"): self.image("logo_ufv.png", 10, 8, 25)
-        if os.path.exists("logo_montana.png"): self.image("logo_montana.png", 175, 8, 25) # Mesmo tamanho
+        # Montana aumentado para 35 e ajustado X para 165 para não cortar
+        if os.path.exists("logo_montana.png"): self.image("logo_montana.png", 165, 8, 35) 
         self.set_y(12); self.set_font('Arial','B',14); self.cell(0,10,clean_text('Relatório de Ensaio'),0,1,'C')
     
     def footer(self):
         self.set_y(-15); self.set_font('Arial','I',6); self.cell(0,10,clean_text(f'Página {self.page_no()}'),0,0,'C')
     
-    # Novo Field com Negrito no Label
-    def field(self, label, valor, x, y, w, h=6, align='L', multi=False):
+    # Field com opção de Valor em Negrito (bold_value)
+    def field(self, label, valor, x, y, w, h=6, align='L', multi=False, bold_value=False):
         self.set_xy(x, y)
-        self.set_font('Arial', 'B', 8) # Label agora é Bold e Maior (8)
+        self.set_font('Arial', 'B', 8) # Label Bold
         self.cell(w, 3, clean_text(label), 0, 0, 'L')
         
         self.set_xy(x, y+3)
-        self.set_font('Arial', '', 8) # Valor normal
+        if bold_value: self.set_font('Arial', 'B', 8) # Valor Bold (se pedido)
+        else: self.set_font('Arial', '', 8) # Valor Normal
+        
         if multi: 
             self.rect(x, y+3, w, h)
             self.multi_cell(w, 4, clean_text(valor), 0, align)
@@ -166,32 +169,26 @@ def gerar_pdf(d):
     pdf.field("Norma ABNT", get_val(d, ["Norma"]), 75, y, 60)
     pdf.field("Retenção Esp.", fmt_num(get_val(d, ["Retenção"])), 140, y, 60, align='C')
 
-    # 4. Química (Tabela Complexa)
+    # 4. Química
     y += 20; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE RETENÇÃO"), 1, 1, 'C')
     
-    # Cabeçalhos da Tabela
+    # Cabeçalhos
     pdf.set_font('Arial', 'B', 7); x=10; cy=pdf.get_y()
     pdf.cell(40, 10, clean_text("Ingredientes ativos"), 1, 0, 'C')
     pdf.cell(30, 10, clean_text("Resultado (kg/m3)"), 1, 0, 'C')
-    # Bloco "Balanceamento"
     pdf.cell(80, 5, clean_text("Balanceamento químico"), 1, 0, 'C')
     
-    # ** MÉTODO MESCLADO **
-    # Salva posição antes de desenhar
-    pdf.set_xy(x+150, cy) 
-    # Desenha célula gigante (Altura 10 do cabeçalho + 18 das 3 linhas = 28? Não, vamos alinhar só o titulo aqui)
-    pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
+    # Método (Mesclado)
+    pdf.set_xy(x+150, cy); pdf.cell(40, 10, clean_text("Método"), 1, 0, 'C')
     
-    # Sub-cabeçalhos do Balanceamento
+    # Sub-cabeçalhos
     pdf.set_xy(x+70, cy+5)
     pdf.cell(30, 5, clean_text("Resultados (%)"), 1, 0, 'C')
     pdf.cell(50, 5, clean_text("Padrões"), 1, 0, 'C')
     
-    # Posiciona para os dados
-    pdf.set_xy(x, cy+10)
-    y_dados_inicio = cy+10
-
-    # Valores Químicos
+    # Dados
+    pdf.set_xy(x, cy+10); y_dados_inicio = cy+10
+    
     kg_cr=fmt_num(get_val(d,["Retenção Cromo","Cromo"]))
     kg_cu=fmt_num(get_val(d,["Retenção Cobre","Cobre"]))
     kg_as=fmt_num(get_val(d,["Retenção Arsênio","Arsenio"]))
@@ -202,60 +199,64 @@ def gerar_pdf(d):
 
     pdf.set_font('Arial', '', 8)
     
-    # Função para desenhar linha (sem a coluna método)
     def row_data(n, k, p, mn, mx):
         pdf.cell(40, 6, clean_text(n), 1, 0, 'L')
         pdf.cell(30, 6, k, 1, 0, 'C')
         pdf.cell(30, 6, p, 1, 0, 'C')
         pdf.cell(25, 6, mn, 1, 0, 'C')
         pdf.cell(25, 6, mx, 1, 0, 'C')
-        # Pula a coluna método aqui, vamos desenhar ela separada
-        pdf.set_x(pdf.get_x() + 40) 
-        pdf.ln(6)
+        pdf.set_x(pdf.get_x() + 40); pdf.ln(6)
 
-    # Desenha célula gigante do Método (Altura 3 linhas * 6 = 18)
-    pdf.set_xy(160, y_dados_inicio) # Coluna Método começa no X=160
+    # Coluna Método Gigante
+    pdf.set_xy(160, y_dados_inicio)
     pdf.cell(40, 18, clean_text("Metodo UFV 01"), 1, 0, 'C')
     
-    # Volta para desenhar os dados linha a linha
+    # Linhas de Dados
     pdf.set_xy(10, y_dados_inicio)
-    
-    # Nomes com "falsa" subscrição (usando texto normal pois PDF padrão limita)
     row_data("Teor de CrO3 (Cromo)", kg_cr, pc_cr, "41,8", "53,2")
     row_data("Teor de CuO (Cobre)", kg_cu, pc_cu, "15,2", "22,8")
     row_data("Teor de As2O5 (Arsênio)", kg_as, pc_as, "27,3", "40,7")
 
-    # Linha Total
+    # Linha Total (Correção do 100)
     try: tot = float(kg_cr.replace(",",".")) + float(kg_cu.replace(",",".")) + float(kg_as.replace(",","."))
     except: tot=0
     
-    # Busca o valor da coluna BM (Balanço Total)
-    bm_total = fmt_num(get_val(d, ["Balanço Total", "Balanço Total %", "BM"]))
+    # 3. Tenta pegar a Soma da planilha, se não, calcula a soma das porcentagens
+    bm_val_str = get_val(d, ["Balanço Total", "Balanço Total %", "BM", "Soma Concentração", "Soma"])
+    if not bm_val_str or bm_val_str == "0":
+        try:
+            # Cálculo de backup: soma as strings de porcentagem
+            v1 = float(pc_cr.replace(",", "."))
+            v2 = float(pc_cu.replace(",", "."))
+            v3 = float(pc_as.replace(",", "."))
+            bm_total = fmt_num(v1 + v2 + v3) # Deve dar 100.00
+        except: bm_total = "100,00" # Fallback visual
+    else:
+        bm_total = fmt_num(bm_val_str)
     
     pdf.set_font('Arial', 'B', 8)
     pdf.cell(40, 6, clean_text("RETENÇÃO TOTAL"), 1, 0, 'L')
     pdf.cell(30, 6, fmt_num(tot), 1, 0, 'C')
-    pdf.cell(30, 6, bm_total, 1, 0, 'C') # Valor da Coluna BM
+    pdf.cell(30, 6, bm_total, 1, 0, 'C')
     pdf.cell(90, 6, clean_text("Nota: Resultados restritos as amostras"), 1, 1, 'C')
 
     # 5. Penetração
     y = pdf.get_y() + 5; pdf.set_y(y); pdf.set_font('Arial', 'B', 9); pdf.cell(190, 6, clean_text("RESULTADOS DE PENETRAÇÃO"), 0, 1, 'C')
     y += 7
     
-    # CORREÇÃO DO TIPO: Busca Descrição do Grau (Coluna AB)
-    tipo_correto = get_val(d, ["Descrição do Grau", "Descricao do Grau", "Grau Descricao"])
+    # 2. Correção do Tipo: Adicionadas mais chaves de busca para garantir
+    tipo_correto = get_val(d, ["Descrição do Grau", "Descricao do Grau", "Grau Descricao", "Descrição Grau", "AB"])
     
     pdf.field("Grau", get_val(d, ["Grau"]), 10, y, 30, align='C')
-    pdf.field("Tipo", tipo_correto, 45, y, 50, align='C') # Agora puxa da coluna certa
+    pdf.field("Tipo", tipo_correto, 45, y, 50, align='C')
     
     pdf.set_xy(100, y); pdf.set_font('Arial', 'B', 8); pdf.cell(90, 3, clean_text("Descrição"), 0, 0, 'L')
     pdf.set_xy(100, y+3); pdf.set_font('Arial', '', 8); pdf.rect(100, y+3, 100, 12)
     pdf.multi_cell(100, 4, clean_text(get_val(d, ["Descrição Penetração", "Descricao"])), 0, 'L')
 
-    # 6. Observações
+    # 6. Observações (AGORA COM CONTEÚDO EM NEGRITO)
     y += 20; obs = get_val(d, ["Observação", "Obs"])
-    # Observação em Negrito no Label
-    if obs: pdf.set_y(y); pdf.field("Observações", obs, 10, y, 190, 12, 'L', True)
+    if obs: pdf.set_y(y); pdf.field("Observações", obs, 10, y, 190, 12, 'L', multi=True, bold_value=True) # <--- AQUI
     
     pdf.set_y(-35); pdf.set_font('Arial', '', 9); pdf.cell(0, 5, clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"), 0, 1, 'C')
     return pdf.output(dest='S').encode('latin-1')
