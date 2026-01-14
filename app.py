@@ -12,8 +12,8 @@ from datetime import datetime
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
 NOME_ARQUIVO_EXCEL = "Planilha controle UFV.xlsx"
 
-# ✅ ID DA PASTA (JÁ CONFIGURADO)
-ID_PASTA_RAIZ = "1AQ_k_DAjTpbjWt5KPJNDWs63fr8O0DdD"
+# ✅ ID DO DRIVE COMPARTILHADO (JÁ CONFIGURADO)
+ID_PASTA_RAIZ = "0AOsS0ew45LNdUk9PVA" 
 
 # --- CONEXÃO DRIVE ---
 def get_drive_service():
@@ -22,36 +22,61 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def encontrar_id_arquivo(service, nome_arquivo):
+    # Procura arquivo em TODOS os drives (Pessoal e Compartilhado)
     query = f"name = '{nome_arquivo}' and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
-    return items[0]['id'] if items else None
+    try:
+        results = service.files().list(
+            q=query, 
+            fields="files(id, name)", 
+            supportsAllDrives=True, 
+            includeItemsFromAllDrives=True
+        ).execute()
+        items = results.get('files', [])
+        return items[0]['id'] if items else None
+    except: return None
 
-# --- GERENCIADOR DE PASTAS ---
+# --- GERENCIADOR DE PASTAS (MODO DRIVE COMPARTILHADO) ---
 def get_or_create_folder(service, folder_name, parent_id):
+    # 1. Tenta achar a pasta
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+        q=query, 
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
     items = results.get('files', [])
-    if items: return items[0]['id']
+    
+    if items:
+        return items[0]['id']
     else:
-        metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
-        return service.files().create(body=metadata, fields='id').execute().get('id')
+        # 2. Se não achar, cria (com permissão de Drive Compartilhado)
+        metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        file = service.files().create(
+            body=metadata, 
+            fields='id',
+            supportsAllDrives=True 
+        ).execute()
+        return file.get('id')
 
 def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     try:
         if not ID_PASTA_RAIZ:
-            st.error("ERRO CRÍTICO: ID_PASTA_RAIZ não configurado.")
+            st.error("⚠️ ID da pasta não configurado.")
             return
 
         service = get_drive_service()
         
-        # 1. Tratamento de Data
+        # Lógica de Data
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 
                  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         
         data_obj = datetime.now()
-        if isinstance(data_entrada_raw, datetime): 
-            data_obj = data_entrada_raw
+        if isinstance(data_entrada_raw, datetime): data_obj = data_entrada_raw
         elif data_entrada_raw and str(data_entrada_raw).strip() not in ["", "-"]:
             try:
                 v_str = str(data_entrada_raw).strip().split(" ")[0]
@@ -63,33 +88,37 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         ano_str = str(data_obj.year)
         mes_str = meses[data_obj.month]
         
-        # 2. Navegação de Pastas
+        # Criação de Pastas (Ano > Mês) dentro do Drive Compartilhado
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
         mes_id = get_or_create_folder(service, mes_str, ano_id)
         
-        # 3. Upload do Arquivo (MODO SEGURO)
-        # Limpa o nome do arquivo para evitar erros (tira barras)
+        # Upload do Arquivo
         nome_limpo = nome_arquivo.replace("/", "-").replace("\\", "-")
-        
-        # Cria o objeto de arquivo na memória
         arquivo_buffer = io.BytesIO(pdf_bytes)
         
-        # ⚠️ MUDANÇA IMPORTANTE: resumable=False para evitar travamentos em arquivos pequenos
+        # Resumable=False é essencial aqui
         media = MediaIoBaseUpload(arquivo_buffer, mimetype='application/pdf', resumable=False)
-        
         metadata = {
             'name': nome_limpo,
             'parents': [mes_id]
         }
         
-        arquivo_final = service.files().create(body=metadata, media_body=media, fields='id').execute()
+        service.files().create(
+            body=metadata, 
+            media_body=media, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
         
         st.balloons()
-        st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅")
-        st.success(f"Arquivo **{nome_limpo}** salvo com sucesso na pasta **{ano_str} > {mes_str}**!")
+        st.toast(f"Salvo no Drive Compartilhado: {ano_str}/{mes_str}", icon="✅")
+        st.success(f"Sucesso! Arquivo **{nome_limpo}** salvo em: **{ano_str} > {mes_str}**")
         
     except Exception as e:
-        st.error(f"Erro DETALHADO ao salvar no Drive: {e}")
+        erro = str(e)
+        st.error(f"Erro ao salvar: {erro}")
+        if "storageQuotaExceeded" in erro:
+            st.warning("Ainda deu erro de cota? Verifique se o ID inserido é realmente de um DRIVE COMPARTILHADO.")
 
 # --- INTELIGÊNCIA MATEMÁTICA ---
 def corrigir_numero_individual(v):
@@ -105,8 +134,7 @@ def corrigir_valores_dataframe(df):
     cols = ['Retenção', 'Retenção Cromo', 'Retenção Cobre', 'Retenção Arsênio', 'Balanço Cromo', 'Balanço Cobre', 'Balanço Arsênio', 'Soma Concentração']
     for col in df.columns:
         for alvo in cols:
-            if alvo.lower() in col.lower():
-                df[col] = df[col].apply(corrigir_numero_individual)
+            if alvo.lower() in col.lower(): df[col] = df[col].apply(corrigir_numero_individual)
     return df
 
 # --- CARREGAMENTO ---
@@ -118,13 +146,12 @@ def carregar_excel_drive(aba_nome):
         if not fid: 
             st.error(f"Arquivo '{NOME_ARQUIVO_EXCEL}' não encontrado.")
             return pd.DataFrame()
-        
         request = service.files().get_media(fileId=fid)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
         return corrigir_valores_dataframe(df)
     except Exception as e:
-        st.error(f"Erro carregar Excel: {e}")
+        st.error(f"Erro ao carregar Excel: {e}")
         return pd.DataFrame()
 
 def salvar_excel_drive(df, aba_nome):
@@ -132,17 +159,12 @@ def salvar_excel_drive(df, aba_nome):
         service = get_drive_service()
         fid = encontrar_id_arquivo(service, NOME_ARQUIVO_EXCEL)
         if not fid: return
-        
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name=aba_nome, index=False)
-            
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df.to_excel(writer, sheet_name=aba_nome, index=False)
         buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
-        service.files().update(fileId=fid, media_body=media).execute()
-        
-        st.toast("Excel Salvo!", icon="💾")
-        st.cache_data.clear()
+        service.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
+        st.toast("Excel Salvo!", icon="💾"); st.cache_data.clear()
     except Exception as e: st.error(f"Erro salvar Excel: {e}")
 
 # --- PDF HELPERS ---
@@ -175,15 +197,11 @@ class RPDF(FPDF):
         self.set_y(12); self.set_font('Arial','B',14); self.cell(0,10,clean_text('Relatório de Ensaio'),0,1,'C')
     def footer(self):
         self.set_y(-15); self.set_font('Arial','I',6); self.cell(0,10,clean_text(f'Página {self.page_no()}'),0,0,'C')
-    
     def field(self, label, valor, x, y, w, h=6, align='L', multi=False):
         self.set_xy(x, y); self.set_font('Arial', '', 6); self.cell(w, 3, clean_text(label), 0, 0, 'L')
         self.set_xy(x, y+3); self.set_font('Arial', '', 8)
-        if multi: 
-            self.rect(x, y+3, w, h)
-            self.multi_cell(w, 4, clean_text(valor), 0, align)
-        else: 
-            self.cell(w, h, clean_text(valor), 1, 0, align)
+        if multi: self.rect(x, y+3, w, h); self.multi_cell(w, 4, clean_text(valor), 0, align)
+        else: self.cell(w, h, clean_text(valor), 1, 0, align)
 
 def gerar_pdf(d):
     pdf = RPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
@@ -191,12 +209,10 @@ def gerar_pdf(d):
     pdf.field("Data de Entrada", fmt_date(get_val(d, ["Data de entrada", "Entrada"])), 10, y, 40, align='C')
     pdf.field("Número ID", clean_text(get_val(d, ["Código UFV", "ID"])), 150, y-5, 50, align='C')
     pdf.field("Data de Emissão", fmt_date(get_val(d, ["Data de Registro", "Fim da análise"])), 150, y+8, 50, align='C')
-    
     y+=20; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(0,5,clean_text("DADOS DO CLIENTE"),0,1,'L')
     y+=6; pdf.field("Cliente", get_val(d, ["Nome do Cliente"]), 10, y, 190)
     y+=11; pdf.field("Cidade/UF", f"{get_val(d,['Cidade'])}/{get_val(d,['Estado'])}", 10, y, 90)
     pdf.field("E-mail", get_val(d, ["E-mail"]), 105, y, 95)
-    
     y+=15; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(0,5,clean_text("IDENTIFICAÇÃO DA AMOSTRA"),0,1,'L')
     y+=6; pdf.field("Ref. Cliente", get_val(d, ["Indentificação de Amostra"]), 10, y, 190)
     y+=11; pdf.field("Madeira", get_val(d, ["Madeira"]), 10, y, 90)
@@ -204,31 +220,25 @@ def gerar_pdf(d):
     y+=11; pdf.field("Aplicação", get_val(d, ["Aplicação"]), 10, y, 60)
     pdf.field("Norma ABNT", get_val(d, ["Norma"]), 75, y, 60)
     pdf.field("Retenção Esp.", fmt_num(get_val(d, ["Retenção"])), 140, y, 60, align='C')
-    
     y+=20; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(190,6,clean_text("RESULTADOS DE RETENÇÃO"),1,1,'C')
     pdf.set_font('Arial','B',7); x=10; cy=pdf.get_y()
     pdf.cell(40,10,clean_text("Ingredientes ativos"),1,0,'C'); pdf.cell(30,10,clean_text("Resultado (kg/m3)"),1,0,'C')
     pdf.cell(80,5,clean_text("Balanceamento químico"),1,0,'C'); pdf.set_xy(x+150,cy); pdf.cell(40,10,clean_text("Método"),1,0,'C')
     pdf.set_xy(x+70,cy+5); pdf.cell(30,5,clean_text("Resultados (%)"),1,0,'C'); pdf.cell(50,5,clean_text("Padrões"),1,0,'C'); pdf.set_xy(x,cy+10)
-    
     kg_cr=fmt_num(get_val(d,["Retenção Cromo","Cromo"])); kg_cu=fmt_num(get_val(d,["Retenção Cobre","Cobre"])); kg_as=fmt_num(get_val(d,["Retenção Arsênio","Arsenio"]))
     pc_cr=fmt_num(get_val(d,["Balanço Cromo","Cromo %"])); pc_cu=fmt_num(get_val(d,["Balanço Cobre","Cobre %"])); pc_as=fmt_num(get_val(d,["Balanço Arsênio","Arsenio %"]))
-    
     pdf.set_font('Arial','',8)
     def row(n,k,p,mn,mx,mt=""):
         pdf.cell(40,6,clean_text(n),1,0,'L'); pdf.cell(30,6,k,1,0,'C'); pdf.cell(30,6,p,1,0,'C')
         pdf.cell(25,6,mn,1,0,'C'); pdf.cell(25,6,mx,1,0,'C'); pdf.cell(40,6,clean_text(mt),1,1,'C')
     row("Cromo (CrO3)",kg_cr,pc_cr,"41,8","53,2","Metodo UFV 01"); row("Cobre (CuO)",kg_cu,pc_cu,"15,2","22,8",""); row("Arsenio (As2O5)",kg_as,pc_as,"27,3","40,7","")
-    
     try: tot = float(kg_cr.replace(",",".")) + float(kg_cu.replace(",",".")) + float(kg_as.replace(",","."))
     except: tot=0
     pdf.set_font('Arial','B',8); pdf.cell(40,6,clean_text("RETENÇÃO TOTAL"),1,0,'L'); pdf.cell(30,6,fmt_num(tot),1,0,'C'); pdf.cell(30,6,"-",1,0,'C'); pdf.cell(90,6,clean_text("Nota: Resultados restritos as amostras"),1,1,'C')
-    
     y=pdf.get_y()+5; pdf.set_y(y); pdf.set_font('Arial','B',9); pdf.cell(190,6,clean_text("RESULTADOS DE PENETRAÇÃO"),0,1,'C')
     y+=7; pdf.field("Grau", get_val(d,["Grau"]), 10, y, 30, align='C'); pdf.field("Tipo", get_val(d,["Tipo"]), 45, y, 50, align='C')
     pdf.set_xy(100,y); pdf.set_font('Arial','',6); pdf.cell(90,3,clean_text("Descrição"),0,0,'L')
     pdf.set_xy(100,y+3); pdf.set_font('Arial','',8); pdf.rect(100,y+3,100,12); pdf.multi_cell(100,4,clean_text(get_val(d,["Descrição Penetração","Descricao"])),0,'L')
-    
     y+=20; obs=get_val(d,["Observação","Obs"])
     if obs: pdf.set_y(y); pdf.field("Observações", obs, 10, y, 190, 12, 'L', True)
     pdf.set_y(-35); pdf.set_font('Arial','',9); pdf.cell(0,5,clean_text("Dr. Vinicius Resende de Castro - Supervisor do laboratório"),0,1,'C')
@@ -260,23 +270,26 @@ def main():
                 if st.button("💾 SALVAR DADOS NO EXCEL", type="primary"): salvar_excel_drive(df,"Madeira Tratada")
             
             sel=df[df["Selecionar"]==True]
-            st.divider(); c1,c2=st.columns(2)
-            with c1:
-                if st.button("📄 PREVIEW PDF"):
-                    if not sel.empty:
-                        try:
-                            l=sel.iloc[0].to_dict(); pdf=gerar_pdf(l)
-                            st.download_button(f"⬇️ BAIXAR {l.get('Código UFV','R')}.pdf",pdf,f"{l.get('Código UFV','R')}.pdf","application/pdf")
-                        except Exception as e: st.error(f"Erro: {e}")
-                    else: st.warning("Selecione um item.")
-            with c2:
-                if st.button("☁️ SALVAR PDF NO DRIVE (AUTO)"):
-                    if not sel.empty:
-                        try:
-                            l=sel.iloc[0].to_dict(); pdf=gerar_pdf(l)
-                            salvar_pdf_organizado(pdf, f"{l.get('Código UFV','R')}.pdf", get_val(l,["Data de entrada"]))
-                        except Exception as e: st.error(f"Erro: {e}")
-                    else: st.warning("Selecione um item.")
+            st.divider(); 
+            
+            if not sel.empty:
+                st.subheader("📄 Gerar Relatório")
+                try:
+                    l=sel.iloc[0].to_dict()
+                    pdf_bytes=gerar_pdf(l)
+                    nome_arquivo = f"{l.get('Código UFV','Relatorio')}.pdf"
+                    
+                    c_down, c_cloud = st.columns(2)
+                    
+                    with c_down:
+                        st.download_button("⬇️ BAIXAR PDF (PC)", pdf_bytes, nome_arquivo, "application/pdf", type="primary")
+                    
+                    with c_cloud:
+                        if st.button("☁️ SALVAR NO DRIVE COMPARTILHADO"):
+                            salvar_pdf_organizado(pdf_bytes, nome_arquivo, get_val(l,["Data de entrada"]))
+                            
+                except Exception as e: st.error(f"Erro na geração: {e}")
+            else: st.warning("Selecione um item para gerar PDF.")
     
     elif menu=="Solução":
         df=carregar_excel_drive("Solução Preservativa")
