@@ -38,7 +38,6 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         
         data_obj = datetime.now()
-        # Blindagem contra NaT
         if pd.isna(data_entrada_raw) or str(data_entrada_raw).strip() in ["", "NaT", "None"]: pass
         elif isinstance(data_entrada_raw, datetime): data_obj = data_entrada_raw
         else:
@@ -84,14 +83,15 @@ def carregar_excel_drive(aba_nome):
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
+        # Garante que o índice original seja preservado para o update funcionar
         return corrigir_valores_dataframe(df)
     except Exception as e: st.error(f"Erro Excel: {e}"); return pd.DataFrame()
 
-def salvar_excel_drive(df, aba_nome):
+def salvar_excel_drive(df_to_save, aba_nome):
     try:
         service = get_drive_service()
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df.to_excel(writer, sheet_name=aba_nome, index=False)
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_to_save.to_excel(writer, sheet_name=aba_nome, index=False)
         buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=ID_ARQUIVO_EXCEL, media_body=media, supportsAllDrives=True).execute()
@@ -100,11 +100,9 @@ def salvar_excel_drive(df, aba_nome):
 
 # --- HELPERS ---
 def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
-
 def fmt_num(v): 
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(v)
-
 def fmt_date(v):
     if pd.isna(v) or v is None or str(v).strip() in ["", "NaT", "None"]: return "-"
     if isinstance(v, datetime): return v.strftime("%d/%m/%Y")
@@ -113,7 +111,6 @@ def fmt_date(v):
         try: return datetime.strptime(s, f).strftime("%d/%m/%Y")
         except: continue
     return s
-
 def get_val(d, keys):
     dn = {k.strip().lower(): v for k, v in d.items()}
     for k in keys:
@@ -253,39 +250,47 @@ def main():
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0,"Selecionar",False)
             
-            # --- ÁREA DE FILTRO (NOVA V45) ---
-            st.markdown("### 🔎 Buscar Amostra")
+            # --- ZONA DE BUSCA (AGORA COM EDIÇÃO SEGURA) ---
+            st.markdown("### 🔎 Buscar/Editar Amostra")
             col_busca, col_info = st.columns([1, 3])
             
             with col_busca:
-                numero_busca = st.text_input("Digite o número (ex: 620)", placeholder="Somente números...")
+                numero_busca = st.text_input("Digite o número (ex: 620)", placeholder="Busque para Editar...")
             
-            # Lógica de Filtro
+            # --- LÓGICA DE MESCLAGEM INTELIGENTE ---
             if numero_busca:
                 termo = f"UFV-M-{numero_busca}"
-                # Filtra o DataFrame (ignora maiusculas/minusculas)
+                # Filtra mantendo o índice original
                 df_filtrado = df[df['Código UFV'].astype(str).str.contains(termo, case=False, na=False)]
                 if df_filtrado.empty:
-                    # Tenta buscar só pelo número caso não tenha o prefixo na planilha
                     df_filtrado = df[df['Código UFV'].astype(str).str.contains(numero_busca, case=False, na=False)]
                 
                 with col_info:
-                    st.info(f"Mostrando {len(df_filtrado)} resultado(s) para '{termo}'")
+                    st.info(f"Encontrados: {len(df_filtrado)}. Você pode editar abaixo e Salvar.")
+                
+                # Permite edição do filtrado
+                df_editado_parcial = st.data_editor(df_filtrado, num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
+                
+                # BOTÃO DE SALVAR INTELIGENTE
+                if st.session_state['tipo']=="Lpm":
+                    if st.button("💾 SALVAR ALTERAÇÕES (Mesclar)", type="primary"):
+                        # Mágica: Atualiza o DF original com as linhas editadas (baseado no Index)
+                        df.update(df_editado_parcial)
+                        salvar_excel_drive(df, "Madeira Tratada")
+                        st.success("Dados mesclados e salvos com sucesso!")
+            
             else:
-                df_filtrado = df # Se não digitar nada, mostra tudo
+                # Se não tem busca, mostra tudo (Modo Clássico)
+                with col_info: st.info("Mostrando tabela completa.")
+                df_editado_total = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="tabela_completa")
+                
+                if st.session_state['tipo']=="Lpm":
+                    if st.button("💾 SALVAR TUDO", type="primary"): 
+                        salvar_excel_drive(df_editado_total, "Madeira Tratada")
             
-            # Mostra o Editor com o DataFrame FILTRADO
-            df_editado = st.data_editor(df_filtrado, num_rows="dynamic", use_container_width=True, key="editor_tabela")
-            
-            # Botão de Salvar Excel (Só aparece se for admin)
-            if st.session_state['tipo']=="Lpm":
-                if st.button("💾 SALVAR DADOS NO EXCEL", type="primary"): 
-                    # Cuidado: Salvar filtrado pode ser perigoso se o usuário não souber o que está fazendo.
-                    # Idealmente, editamos o DF original. Mas para simplificar:
-                    salvar_excel_drive(df_editado, "Madeira Tratada")
-            
-            # Seleção para PDF (Baseada na tabela filtrada)
-            sel = df_editado[df_editado["Selecionar"]==True]
+            # --- PDF (Usa o dataframe editado atual) ---
+            current_df = df_editado_parcial if numero_busca else df_editado_total
+            sel = current_df[current_df["Selecionar"]==True]
             st.divider()
             
             if not sel.empty:
@@ -303,10 +308,7 @@ def main():
                             salvar_pdf_organizado(pdf_bytes, nome_arquivo, get_val(l,["Data de entrada"]))
                 except Exception as e: st.error(f"Erro na geração: {e}")
             else: 
-                if not df_filtrado.empty:
-                    st.warning("Selecione um item na tabela acima para gerar o PDF.")
-                else:
-                    st.warning("Nenhum resultado encontrado com esse número.")
+                if numero_busca and current_df.empty: st.warning("Nenhum resultado.")
     
     elif menu=="Solução":
         df=carregar_excel_drive("Solução Preservativa")
