@@ -54,11 +54,14 @@ TXT_REPROVADO = "Os resultados da análise química apresentaram uma retenção 
 # --- PERSISTÊNCIA ---
 def carregar_config():
     if os.path.exists(ARQUIVO_CONFIG):
-        with open(ARQUIVO_CONFIG, "r") as f: return json.load(f)
+        try:
+            with open(ARQUIVO_CONFIG, "r") as f: return json.load(f)
+        except: return {}
     return {}
 
 def salvar_config(config):
-    with open(ARQUIVO_CONFIG, "w") as f: json.dump(config, f)
+    try: with open(ARQUIVO_CONFIG, "w") as f: json.dump(config, f)
+    except: pass
 
 # --- DRIVE ---
 def get_drive_service():
@@ -67,50 +70,62 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_or_create_folder(service, folder_name, parent_id):
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    items = results.get('files', [])
-    if items: return items[0]['id']
-    else:
-        metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
-        return service.files().create(body=metadata, fields='id', supportsAllDrives=True).execute().get('id')
+    try:
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        items = results.get('files', [])
+        if items: return items[0]['id']
+        else:
+            metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
+            return service.files().create(body=metadata, fields='id', supportsAllDrives=True).execute().get('id')
+    except: return None
 
 def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
     try:
         if not ID_PASTA_RAIZ: st.error("⚠️ ID da pasta não configurado."); return
         service = get_drive_service()
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
+        
         data_obj = datetime.now()
-        # Tratamento seguro de data
         if isinstance(data_entrada_raw, (datetime, date)): 
             data_obj = data_entrada_raw
-        elif data_entrada_raw and str(data_entrada_raw).strip() not in ["", "NaT", "None"]:
+        elif data_entrada_raw and str(data_entrada_raw).strip() not in ["", "NaT", "None", "nan"]:
             try:
                 v_str = str(data_entrada_raw).strip().split(" ")[0]
-                for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"]:
+                for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"]:
                     try: data_obj = datetime.strptime(v_str, fmt); break
                     except: continue
             except: pass
             
         ano_str = str(data_obj.year); mes_str = meses[data_obj.month]
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
+        if not ano_id: st.error("Erro pasta ano"); return
         mes_id = get_or_create_folder(service, mes_str, ano_id)
+        if not mes_id: st.error("Erro pasta mês"); return
+        
         nome_limpo = nome_arquivo.replace("/", "-").replace("\\", "-")
         media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=False)
         metadata = {'name': nome_limpo, 'parents': [mes_id]}
         service.files().create(body=metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
         st.balloons(); st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅"); st.success(f"Arquivo **{nome_limpo}** salvo em: **{ano_str} > {mes_str}**")
-    except Exception as e: st.error(f"Erro ao salvar: {e}")
+    except Exception as e: st.error(f"Erro ao salvar PDF: {e}")
 
 # --- MATEMÁTICA ---
 def to_float(v):
-    try: return 0.0 if (pd.isna(v) or str(v).strip()=="") else float(str(v).replace(",", "."))
+    try: 
+        if pd.isna(v) or str(v).strip() in ["", "None", "nan"]: return 0.0
+        return float(str(v).replace(",", "."))
     except: return 0.0
 
+# 🔥 NOVA FUNÇÃO DE CÁLCULO COM DIAGNÓSTICO DE ERROS 🔥
 def aplicar_formulas_excel(df):
+    erros = []
+    # Itera sobre as linhas para calcular
     for i, row in df.iterrows():
         try:
-            # 1. GRAU
+            codigo = row.get('Código UFV', f'Linha {i}')
+            
+            # 1. GRAU (Se existir a coluna Grau)
             if 'Grau' in df.columns:
                 grau = to_float(row.get('Grau'))
                 if grau > 0 and int(grau) in DESC_GRAU:
@@ -118,34 +133,38 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Descrição Grau'] = d_curta
                     df.at[i, 'Descrição Penetração'] = d_longa
 
-            # 2. MÉDIAS FÍSICAS
+            # 2. MÉDIAS FÍSICAS (Se existirem colunas de Diâmetro)
             if 'Diâmetro 1 (mm)' in df.columns:
+                # Recupera valores (trata erros de nome de coluna se necessário)
                 d_list = [to_float(row.get(f'Diâmetro {x} (mm)')) for x in range(1,6)]
                 diams = [d for d in d_list if d > 0]
-                diam_medio_cm = (sum(diams)/len(diams))/10.0 if diams else 0
+                diam_medio_cm = (sum(diams)/len(diams))/10.0 if len(diams) > 0 else 0
                 df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
                 c_list = [to_float(row.get(f'Comprim. {x} (mm)')) for x in range(1,6)]
                 comps = [c for c in c_list if c > 0]
-                comp_medio_cm = (sum(comps)/len(comps))/10.0 if comps else 0
+                comp_medio_cm = (sum(comps)/len(comps))/10.0 if len(comps) > 0 else 0
                 df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
 
                 m_list = [to_float(row.get(f'Massa {x} (g)')) for x in range(1,6)]
                 massas = [m for m in m_list if m > 0]
-                massa_media = sum(massas)/len(massas) if massas else 0
+                massa_media = sum(massas)/len(massas) if len(massas) > 0 else 0
                 df.at[i, 'Massa média (g)'] = round(massa_media, 2)
 
                 dens_kg_m3 = 0
                 if diam_medio_cm > 0 and comp_medio_cm > 0:
                     vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
                     df.at[i, 'Volume (cm³)'] = round(vol, 2)
-                    if massa_media > 0:
+                    if vol > 0 and massa_media > 0:
                         dens_g_cm3 = massa_media / vol
                         dens_kg_m3 = dens_g_cm3 * 1000
                         df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
                         df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
-                
-                # 3. QUÍMICA
+            else:
+                dens_kg_m3 = 0
+
+            # 3. QUÍMICA
+            if 'Cromo (%)' in df.columns:
                 cr_pct = to_float(row.get('Cromo (%)'))
                 cu_pct = to_float(row.get('Cobre (%)'))
                 as_pct = to_float(row.get('Arsênio (%)'))
@@ -158,6 +177,10 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
                     df.at[i, 'Balanço Total'] = 100.00
                 
+                # Usa densidade calculada ou da planilha
+                if dens_kg_m3 == 0 and 'Densidade (Kg/m³)' in df.columns:
+                    dens_kg_m3 = to_float(row.get('Densidade (Kg/m³)', 0))
+
                 ret_cr = (cr_pct/100)*dens_kg_m3
                 ret_cu = (cu_pct/100)*dens_kg_m3
                 ret_as = (as_pct/100)*dens_kg_m3
@@ -180,7 +203,15 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Retenção Esp.'] = ret_esp
                     df.at[i, 'Observação'] = TXT_APROVADO if ret_total >= ret_esp else TXT_REPROVADO
 
-        except: continue
+        except Exception as e: 
+            erros.append(f"Erro em {codigo}: {str(e)}")
+            
+    # Se houver erros, MOSTRA NA TELA para debug
+    if erros:
+        st.error(f"⚠️ {len(erros)} Erros de cálculo detectados! Verifique se as colunas existem e os dados são números.")
+        with st.expander("Ver detalhes dos erros"):
+            for erro in erros: st.write(erro)
+
     return df
 
 @st.cache_data(ttl=60)
@@ -189,7 +220,7 @@ def carregar_excel_drive(aba_nome):
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
-        df.columns = df.columns.str.strip()
+        df.columns = df.columns.str.strip() # Remove espaços extras dos nomes das colunas
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         
         # Filtros de Limpeza
@@ -200,8 +231,6 @@ def carregar_excel_drive(aba_nome):
             cols_proibidas = ['Diâmetro 1 (mm)', 'Massa 1 (g)', 'Retenção', 'Retenção Esp.']
             df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
         
-        # --- LIMPEZA DE DATAS (NOVO V55) ---
-        # Converte colunas de data para mostrar apenas DATA (sem hora)
         cols_data = ["Data de entrada", "Início da análise", "Fim da análise", "Data de Registro"]
         for col in cols_data:
             if col in df.columns:
@@ -212,12 +241,19 @@ def carregar_excel_drive(aba_nome):
 
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
+        # Calcula e Mostra Prévia
         df_final = aplicar_formulas_excel(df_to_save)
+        
+        # DEBUG: Mostra o que vai ser salvo
+        st.info("✅ Dados calculados! Salvando no Drive...")
         
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         arquivo_original = io.BytesIO(request.execute())
-        wb = openpyxl.load_workbook(arquivo_original)
+        
+        try: wb = openpyxl.load_workbook(arquivo_original)
+        except: st.error("Arquivo corrompido"); return
+
         if aba_nome not in wb.sheetnames: st.error("Aba não encontrada"); return
         ws = wb[aba_nome]
         
@@ -234,12 +270,17 @@ def salvar_excel_drive(df_to_save, aba_nome):
             if linha:
                 for col, val in row_df.items():
                     c_idx = col_map.get(col)
-                    if c_idx: ws.cell(row=linha, column=c_idx, value=val)
+                    if c_idx: 
+                        if isinstance(val, (date, datetime)):
+                            ws.cell(row=linha, column=c_idx, value=val)
+                            ws.cell(row=linha, column=c_idx).number_format = 'DD/MM/YYYY'
+                        else:
+                            ws.cell(row=linha, column=c_idx, value=val)
         
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=ID_ARQUIVO_EXCEL, media_body=media, supportsAllDrives=True).execute()
-        st.toast("Calculado e Salvo!", icon="✅"); st.cache_data.clear()
+        st.toast("Salvo com Sucesso!", icon="💾"); st.cache_data.clear()
         
     except Exception as e: st.error(f"Erro Salvar: {e}")
 
@@ -249,7 +290,6 @@ def fmt_num(v):
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(v)
 def fmt_date(v):
-    # Formata para PDF (DD/MM/AAAA)
     if pd.isna(v) or v is None or str(v).strip() in ["", "NaT", "None"]: return "-"
     if isinstance(v, (datetime, date)): return v.strftime("%d/%m/%Y")
     s = str(v).strip().split(" ")[0]
@@ -356,10 +396,8 @@ def main():
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0,"Selecionar",False)
             
-            # --- SELETOR DE COLUNAS ---
+            # SELETOR DE COLUNAS
             cols_disponiveis = [c for c in df.columns if c not in ["Selecionar", "Código UFV"]]
-            
-            # Padrão Focado
             padrao = [c for c in COLS_PADRAO_MADEIRA if c in cols_disponiveis]
             escolha_usuario = config.get("Madeira", padrao)
             
@@ -372,13 +410,19 @@ def main():
                     st.rerun()
 
             cols_finais = ["Selecionar", "Código UFV"] + cols_visiveis
-            # Filtro de segurança para não quebrar se coluna mudar nome
             cols_finais = [c for c in cols_finais if c in df.columns]
 
             st.markdown("### 🔎 Buscar/Editar Amostra")
             col_busca, col_info = st.columns([1, 3])
             with col_busca: numero_busca = st.text_input("Digite o número (ex: 620)", placeholder="Busque para Editar...")
             
+            column_config_dates = {
+                "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
+                "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
+                "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
+                "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
+            }
+
             if numero_busca:
                 termo = f"UFV-M-{numero_busca}"
                 df_filtrado = df[df['Código UFV'].astype(str).str.contains(termo, case=False, na=False)]
@@ -386,14 +430,6 @@ def main():
                 
                 with col_info: st.info(f"Encontrados: {len(df_filtrado)}. Edite e clique em CALCULAR.")
                 
-                # Editor especial para DATAS sem hora
-                column_config_dates = {
-                    "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
-                    "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
-                    "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
-                    "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
-                }
-
                 df_view = st.data_editor(
                     df_filtrado[cols_finais], 
                     num_rows="dynamic", 
@@ -406,18 +442,9 @@ def main():
                     if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
                         df.update(df_view)
                         salvar_excel_drive(df, "Madeira Tratada")
-                        st.success("Atualizado!")
                         st.rerun()
             else:
                 with col_info: st.info("Mostrando tabela completa.")
-                
-                column_config_dates = {
-                    "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
-                    "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
-                    "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
-                    "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
-                }
-
                 df_view = st.data_editor(
                     df[cols_finais], 
                     num_rows="dynamic", 
@@ -487,4 +514,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
