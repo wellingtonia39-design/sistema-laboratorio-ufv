@@ -8,7 +8,7 @@ from fpdf import FPDF
 import io
 import os
 import openpyxl
-import json # Para salvar as configurações de coluna
+import json
 from datetime import datetime
 
 # --- CONFIGURAÇÃO ---
@@ -17,9 +17,28 @@ st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="
 # ✅ IDs CONFIGURADOS
 ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
 ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
-ARQUIVO_CONFIG = "config_colunas.json" # Arquivo local para salvar preferências
+ARQUIVO_CONFIG = "config_colunas_v54.json"
 
-# --- REGRAS DE NEGÓCIO ---
+# --- DEFINIÇÃO DE COLUNAS PADRÃO (O QUE VEM MARCADO) ---
+# Aqui definimos o "Kit Básico" para você não ter que marcar tudo do zero
+COLS_PADRAO_MADEIRA = [
+    "Selecionar", "Código UFV", "Data de entrada", "Nome do Cliente", "Aplicação", 
+    "Grau", "Descrição Grau", # Para preencher o grau
+    "Diâmetro 1 (mm)", "Diâmetro 2 (mm)", # Para digitar médias
+    "Comprim. 1 (mm)", "Comprim. 2 (mm)",
+    "Massa 1 (g)", "Massa 2 (g)",
+    "Cromo (%)", "Cobre (%)", "Arsênio (%)", # Química
+    "Retenção Total (Kg/m³)", "Observação" # Resultados
+]
+
+COLS_PADRAO_SOLUCAO = [
+    "Código UFV", "Data de entrada", "Nome do Cliente",
+    "Cromo (%)", "Cobre (%)", "Arsênio (%)",
+    "Soma Concentração", "Balanço Total",
+    "Grau do aspecto", "Descrição do aspecto"
+]
+
+# --- REGRAS ---
 REGRAS_RETENCAO = {
     "Postes": 4.0, "Mourões": 6.5, "Dormentes": 6.5, "Cruzetas": 9.6, "Estacas": 6.5, "Madeira Serrada": 4.0
 }
@@ -33,7 +52,7 @@ DESC_GRAU = {
 TXT_APROVADO = "Os resultados da análise química apresentaram uma retenção do produto de acordo com o padrão mínimo exigido pela norma ABNT NBR 16143"
 TXT_REPROVADO = "Os resultados da análise química apresentaram uma retenção do produto inferior ao padrão mínimo exigido pela norma ABNT NBR 16143"
 
-# --- PERSISTÊNCIA DE CONFIGURAÇÃO (COLUNAS) ---
+# --- PERSISTÊNCIA ---
 def carregar_config():
     if os.path.exists(ARQUIVO_CONFIG):
         with open(ARQUIVO_CONFIG, "r") as f: return json.load(f)
@@ -42,13 +61,12 @@ def carregar_config():
 def salvar_config(config):
     with open(ARQUIVO_CONFIG, "w") as f: json.dump(config, f)
 
-# --- CONEXÃO DRIVE ---
+# --- DRIVE ---
 def get_drive_service():
     scope = ["https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return build('drive', 'v3', credentials=creds)
 
-# --- GERENCIADOR DE PASTAS ---
 def get_or_create_folder(service, folder_name, parent_id):
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
@@ -83,16 +101,16 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         st.balloons(); st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅"); st.success(f"Arquivo **{nome_limpo}** salvo em: **{ano_str} > {mes_str}**")
     except Exception as e: st.error(f"Erro ao salvar: {e}")
 
-# --- MATEMÁTICA E LÓGICA ---
+# --- MATEMÁTICA ---
 def to_float(v):
     try: return 0.0 if (pd.isna(v) or str(v).strip()=="") else float(str(v).replace(",", "."))
     except: return 0.0
 
 def aplicar_formulas_excel(df):
+    # Percorre linha a linha para recalcular TUDO baseado nas entradas
     for i, row in df.iterrows():
         try:
-            # --- 1. CÁLCULO DE GRAU (PRIORIDADE) ---
-            # Se tiver Grau, já preenche a descrição
+            # 1. GRAU (Preenchimento de Texto)
             if 'Grau' in df.columns:
                 grau = to_float(row.get('Grau'))
                 if grau > 0 and int(grau) in DESC_GRAU:
@@ -100,23 +118,27 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Descrição Grau'] = d_curta
                     df.at[i, 'Descrição Penetração'] = d_longa
 
-            # --- 2. CÁLCULO FÍSICO ---
+            # 2. MÉDIAS FÍSICAS (Se existirem as colunas de entrada)
             if 'Diâmetro 1 (mm)' in df.columns:
-                d1, d2, d3, d4, d5 = to_float(row.get('Diâmetro 1 (mm)')), to_float(row.get('Diâmetro 2 (mm)')), to_float(row.get('Diâmetro 3 (mm)')), to_float(row.get('Diâmetro 4 (mm)')), to_float(row.get('Diâmetro 5 (mm)'))
-                diams = [d for d in [d1,d2,d3,d4,d5] if d > 0]
+                # Diâmetro
+                d_list = [to_float(row.get(f'Diâmetro {x} (mm)')) for x in range(1,6)]
+                diams = [d for d in d_list if d > 0]
                 diam_medio_cm = (sum(diams)/len(diams))/10.0 if diams else 0
                 df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
-                c1, c2, c3, c4, c5 = to_float(row.get('Comprim. 1 (mm)')), to_float(row.get('Comprim. 2 (mm)')), to_float(row.get('Comprim. 3 (mm)')), to_float(row.get('Comprim. 4 (mm)')), to_float(row.get('Comprim. 5 (mm)'))
-                comps = [c for c in [c1,c2,c3,c4,c5] if c > 0]
+                # Comprimento
+                c_list = [to_float(row.get(f'Comprim. {x} (mm)')) for x in range(1,6)]
+                comps = [c for c in c_list if c > 0]
                 comp_medio_cm = (sum(comps)/len(comps))/10.0 if comps else 0
                 df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
 
-                m1, m2, m3, m4, m5 = to_float(row.get('Massa 1 (g)')), to_float(row.get('Massa 2 (g)')), to_float(row.get('Massa 3 (g)')), to_float(row.get('Massa 4 (g)')), to_float(row.get('Massa 5 (g)'))
-                massas = [m for m in [m1,m2,m3,m4,m5] if m > 0]
+                # Massa
+                m_list = [to_float(row.get(f'Massa {x} (g)')) for x in range(1,6)]
+                massas = [m for m in m_list if m > 0]
                 massa_media = sum(massas)/len(massas) if massas else 0
                 df.at[i, 'Massa média (g)'] = round(massa_media, 2)
 
+                # Volume e Densidade
                 dens_kg_m3 = 0
                 if diam_medio_cm > 0 and comp_medio_cm > 0:
                     vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
@@ -127,8 +149,10 @@ def aplicar_formulas_excel(df):
                         df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
                         df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
                 
-                # --- 3. CÁLCULO QUÍMICO ---
-                cr_pct, cu_pct, as_pct = to_float(row.get('Cromo (%)')), to_float(row.get('Cobre (%)')), to_float(row.get('Arsênio (%)'))
+                # 3. QUÍMICA
+                cr_pct = to_float(row.get('Cromo (%)'))
+                cu_pct = to_float(row.get('Cobre (%)'))
+                as_pct = to_float(row.get('Arsênio (%)'))
                 soma_conc = cr_pct + cu_pct + as_pct
                 df.at[i, 'Soma Concentração'] = round(soma_conc, 2)
 
@@ -138,14 +162,18 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
                     df.at[i, 'Balanço Total'] = 100.00
                 
-                ret_cr = (cr_pct/100)*dens_kg_m3; ret_cu = (cu_pct/100)*dens_kg_m3; ret_as = (as_pct/100)*dens_kg_m3
+                ret_cr = (cr_pct/100)*dens_kg_m3
+                ret_cu = (cu_pct/100)*dens_kg_m3
+                ret_as = (as_pct/100)*dens_kg_m3
+                
                 df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
                 df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
                 df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
+                
                 ret_total = ret_cr + ret_cu + ret_as
                 df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
 
-                # --- 4. APROVAÇÃO ---
+                # 4. APROVAÇÃO E REGRAS
                 aplicacao = str(row.get('Aplicação', '')).strip()
                 ret_esp = 0.0
                 for k, v in REGRAS_RETENCAO.items():
@@ -166,56 +194,55 @@ def carregar_excel_drive(aba_nome):
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
         df.columns = df.columns.str.strip()
-        # O Pandas lê colunas vazias como "Unnamed: X". Removemos isso.
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+        
+        # Filtros de Limpeza (mantidos da V52)
+        if aba_nome == "Madeira Tratada":
+            cols_proibidas = ['pH da solução', 'Densidade  solução (g/cm³)', 'Temperatura', 'Concentração pela tabela']
+            df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
+        elif aba_nome == "Solução Preservativa":
+            cols_proibidas = ['Diâmetro 1 (mm)', 'Massa 1 (g)', 'Retenção', 'Retenção Esp.'] # Simplificado
+            df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
+            
         return df
     except Exception as e: st.error(f"Erro Excel: {e}"); return pd.DataFrame()
 
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
-        # 1. Calcula Matemática
+        # 1. Aplica Matemática
         df_final = aplicar_formulas_excel(df_to_save)
         
-        # 2. Baixa Original para abrir com OpenPyXL
+        # 2. Salva Preservando Formatação
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         arquivo_original = io.BytesIO(request.execute())
         wb = openpyxl.load_workbook(arquivo_original)
-        if aba_nome not in wb.sheetnames: st.error(f"Aba '{aba_nome}' não existe!"); return
+        if aba_nome not in wb.sheetnames: st.error("Aba não encontrada"); return
         ws = wb[aba_nome]
         
-        # 3. Mapeamento
-        col_map = {}
-        for col_idx, cell in enumerate(ws[1], 1): 
-            if cell.value: col_map[str(cell.value).strip()] = col_idx
-            
+        col_map = {str(cell.value).strip(): idx for idx, cell in enumerate(ws[1], 1) if cell.value}
         col_id_idx = col_map.get("Código UFV")
-        if not col_id_idx: st.error("Coluna 'Código UFV' não encontrada!"); return
         
         excel_rows = {}
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-            val_id = row[col_id_idx - 1]
-            if val_id: excel_rows[str(val_id).strip()] = row_idx
+            if row[col_id_idx - 1]: excel_rows[str(row[col_id_idx - 1]).strip()] = row_idx
             
-        # 4. Atualização Cirúrgica
         for index, row_df in df_final.iterrows():
             codigo = str(row_df.get('Código UFV','')).strip()
-            linha_excel = excel_rows.get(codigo)
-            if linha_excel:
-                for col_name_df, valor_novo in row_df.items():
-                    col_idx_excel = col_map.get(col_name_df)
-                    if col_idx_excel: ws.cell(row=linha_excel, column=col_idx_excel, value=valor_novo)
+            linha = excel_rows.get(codigo)
+            if linha:
+                for col, val in row_df.items():
+                    c_idx = col_map.get(col)
+                    if c_idx: ws.cell(row=linha, column=c_idx, value=val)
         
-        # 5. Salva e Limpa Cache para forçar recarregamento na tela
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
         service.files().update(fileId=ID_ARQUIVO_EXCEL, media_body=media, supportsAllDrives=True).execute()
-        st.toast("Cálculos Realizados e Salvos!", icon="✅")
-        st.cache_data.clear() # Limpa o cache para o próximo carregamento mostrar os dados novos
+        st.toast("Calculado e Salvo!", icon="✅"); st.cache_data.clear()
         
-    except Exception as e: st.error(f"Erro Salvar V51: {e}")
+    except Exception as e: st.error(f"Erro Salvar: {e}")
 
-# --- HELPERS ---
+# --- PDF E HELPERS ---
 def clean_text(text): return str(text).encode('latin-1', 'replace').decode('latin-1') if not pd.isna(text) else ""
 def fmt_num(v): 
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
@@ -231,13 +258,11 @@ def fmt_date(v):
 def get_val(d, keys):
     dn = {k.strip().lower(): v for k, v in d.items()}
     for k in keys:
-        k = k.strip().lower()
-        if k in dn:
-            val = dn[k]
+        if k.strip().lower() in dn:
+            val = dn[k.strip().lower()]
             if not pd.isna(val) and str(val).strip() not in ["", "NaT"]: return val
     return ""
 
-# --- CLASSE PDF ---
 class RPDF(FPDF):
     def header(self):
         if os.path.exists("logo_ufv.png"): self.image("logo_ufv.png", 10, 8, 25)
@@ -321,31 +346,34 @@ def main():
     st.title("🌲 Sistema Controle UFV")
     menu=st.sidebar.radio("Menu",["Madeira Tratada","Solução"])
     
-    # --- LÓGICA DE COLUNAS PERSONALIZADAS ---
+    # --- CONFIGURAÇÃO DE COLUNAS ---
     config = carregar_config()
-    
+
     if menu=="Madeira Tratada":
         df=carregar_excel_drive("Madeira Tratada")
         if not df.empty:
             if "Selecionar" not in df.columns: df.insert(0,"Selecionar",False)
             
-            # CONFIGURAÇÃO DE COLUNAS
-            todas_cols = df.columns.tolist()
-            # Default: todas as colunas se não tiver config salva
-            cols_selecionadas = config.get("Madeira", todas_cols)
+            # --- SELETOR DE COLUNAS ---
+            cols_disponiveis = [c for c in df.columns if c not in ["Selecionar", "Código UFV"]]
             
-            with st.expander("⚙️ Personalizar Colunas (Ocultar/Mostrar)"):
-                cols_visiveis = st.multiselect("Selecione as colunas para ver na tabela:", todas_cols, default=cols_selecionadas)
-                if st.button("💾 Salvar Preferência de Colunas"):
+            # Tenta pegar config salva ou usa o Padrão Limpo
+            padrao = [c for c in COLS_PADRAO_MADEIRA if c in cols_disponiveis]
+            escolha_usuario = config.get("Madeira", padrao)
+            
+            with st.expander("⚙️ Personalizar Colunas (Adicionar/Remover)"):
+                cols_visiveis = st.multiselect("Marque as colunas que deseja ver:", cols_disponiveis, default=escolha_usuario)
+                if st.button("💾 Salvar Preferência"):
                     config["Madeira"] = cols_visiveis
                     salvar_config(config)
-                    st.success("Preferência salva!")
+                    st.success("Preferência Salva!")
                     st.rerun()
 
-            # FILTRO DE VISUALIZAÇÃO (Apenas mostra o que o usuario quer, mas o DF original existe)
-            # Garante que 'Selecionar' e 'Código UFV' sempre apareçam para não quebrar a lógica
-            cols_finais = list(set(cols_visiveis + ['Selecionar', 'Código UFV'])) 
-            
+            # Lista final de colunas (Obrigatórias + Escolhidas)
+            cols_finais = ["Selecionar", "Código UFV"] + cols_visiveis
+            # Filtra colunas que realmente existem no DF para evitar erro
+            cols_finais = [c for c in cols_finais if c in df.columns]
+
             st.markdown("### 🔎 Buscar/Editar Amostra")
             col_busca, col_info = st.columns([1, 3])
             with col_busca: numero_busca = st.text_input("Digite o número (ex: 620)", placeholder="Busque para Editar...")
@@ -357,36 +385,33 @@ def main():
                 
                 with col_info: st.info(f"Encontrados: {len(df_filtrado)}. Edite e clique em CALCULAR.")
                 
-                # Editor mostra apenas colunas visiveis, mas edição reflete no todo
-                df_editado_view = st.data_editor(df_filtrado[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
+                df_view = st.data_editor(df_filtrado[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
                 
                 if st.session_state['user'] in ["admin", "Lpm"]:
                     if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
-                        # Atualiza o DF original com as colunas visiveis que foram editadas
-                        df.update(df_editado_view)
+                        df.update(df_view)
                         salvar_excel_drive(df, "Madeira Tratada")
-                        st.success("Dados calculados e salvos!")
-                        st.rerun() # Rerun para atualizar os textos calculados na tela
+                        st.success("Atualizado!")
+                        st.rerun()
             else:
                 with col_info: st.info("Mostrando tabela completa.")
-                df_editado_view = st.data_editor(df[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_completa")
+                df_view = st.data_editor(df[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_completa")
                 
                 if st.session_state['user'] in ["admin", "Lpm"]:
                     if st.button("🧮 CALCULAR E SALVAR TUDO", type="primary"): 
-                        df.update(df_editado_view)
+                        df.update(df_view)
                         salvar_excel_drive(df, "Madeira Tratada")
                         st.rerun()
 
-            # Lógica PDF usa o DF completo atualizado
+            # PDF
             if numero_busca:
-                # Recarrega a linha do DF original (que contem todas as colunas ocultas tambem)
+                # Recarrega a linha do DF original para pegar colunas ocultas
                 current_df = df[df['Código UFV'].isin(df_filtrado['Código UFV'])]
-                # Sincroniza a seleção visual com o DF real
-                selecionados_view = df_editado_view[df_editado_view['Selecionar']==True]['Código UFV'].tolist()
-                sel = current_df[current_df['Código UFV'].isin(selecionados_view)]
+                sel_codes = df_view[df_view['Selecionar']==True]['Código UFV'].tolist()
+                sel = current_df[current_df['Código UFV'].isin(sel_codes)]
             else:
-                selecionados_view = df_editado_view[df_editado_view['Selecionar']==True]['Código UFV'].tolist()
-                sel = df[df['Código UFV'].isin(selecionados_view)]
+                sel_codes = df_view[df_view['Selecionar']==True]['Código UFV'].tolist()
+                sel = df[df['Código UFV'].isin(sel_codes)]
 
             st.divider()
             if not sel.empty:
@@ -406,15 +431,20 @@ def main():
     elif menu=="Solução":
         df=carregar_excel_drive("Solução Preservativa")
         if not df.empty:
-            todas_cols = df.columns.tolist()
-            cols_selecionadas = config.get("Solução", todas_cols)
+            cols_disponiveis = [c for c in df.columns if c not in ["Código UFV"]]
+            padrao = [c for c in COLS_PADRAO_SOLUCAO if c in cols_disponiveis]
+            escolha_usuario = config.get("Solução", padrao)
+            
             with st.expander("⚙️ Personalizar Colunas"):
-                cols_visiveis = st.multiselect("Colunas Visíveis:", todas_cols, default=cols_selecionadas)
+                cols_visiveis = st.multiselect("Marque as colunas que deseja ver:", cols_disponiveis, default=escolha_usuario)
                 if st.button("💾 Salvar Preferência Solução"):
                     config["Solução"] = cols_visiveis
                     salvar_config(config)
                     st.rerun()
-            st.data_editor(df[cols_visiveis], use_container_width=True)
+            
+            cols_finais = ["Código UFV"] + cols_visiveis
+            cols_finais = [c for c in cols_finais if c in df.columns]
+            st.data_editor(df[cols_finais], use_container_width=True)
 
 if __name__ == "__main__":
     main()
