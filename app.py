@@ -9,7 +9,7 @@ import io
 import os
 import openpyxl
 import json
-from datetime import datetime
+from datetime import datetime, date
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Controle UFV", layout="wide", page_icon="🌲")
@@ -19,16 +19,15 @@ ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
 ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
 ARQUIVO_CONFIG = "config_colunas_v54.json"
 
-# --- DEFINIÇÃO DE COLUNAS PADRÃO (O QUE VEM MARCADO) ---
-# Aqui definimos o "Kit Básico" para você não ter que marcar tudo do zero
+# --- DEFINIÇÃO DE COLUNAS PADRÃO ---
 COLS_PADRAO_MADEIRA = [
     "Selecionar", "Código UFV", "Data de entrada", "Nome do Cliente", "Aplicação", 
-    "Grau", "Descrição Grau", # Para preencher o grau
-    "Diâmetro 1 (mm)", "Diâmetro 2 (mm)", # Para digitar médias
+    "Grau", "Descrição Grau", 
+    "Diâmetro 1 (mm)", "Diâmetro 2 (mm)", 
     "Comprim. 1 (mm)", "Comprim. 2 (mm)",
     "Massa 1 (g)", "Massa 2 (g)",
-    "Cromo (%)", "Cobre (%)", "Arsênio (%)", # Química
-    "Retenção Total (Kg/m³)", "Observação" # Resultados
+    "Cromo (%)", "Cobre (%)", "Arsênio (%)",
+    "Retenção Total (Kg/m³)", "Observação"
 ]
 
 COLS_PADRAO_SOLUCAO = [
@@ -82,15 +81,17 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         service = get_drive_service()
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
         data_obj = datetime.now()
-        if pd.isna(data_entrada_raw) or str(data_entrada_raw).strip() in ["", "NaT", "None"]: pass
-        elif isinstance(data_entrada_raw, datetime): data_obj = data_entrada_raw
-        else:
+        # Tratamento seguro de data
+        if isinstance(data_entrada_raw, (datetime, date)): 
+            data_obj = data_entrada_raw
+        elif data_entrada_raw and str(data_entrada_raw).strip() not in ["", "NaT", "None"]:
             try:
                 v_str = str(data_entrada_raw).strip().split(" ")[0]
                 for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"]:
                     try: data_obj = datetime.strptime(v_str, fmt); break
                     except: continue
             except: pass
+            
         ano_str = str(data_obj.year); mes_str = meses[data_obj.month]
         ano_id = get_or_create_folder(service, ano_str, ID_PASTA_RAIZ)
         mes_id = get_or_create_folder(service, mes_str, ano_id)
@@ -107,10 +108,9 @@ def to_float(v):
     except: return 0.0
 
 def aplicar_formulas_excel(df):
-    # Percorre linha a linha para recalcular TUDO baseado nas entradas
     for i, row in df.iterrows():
         try:
-            # 1. GRAU (Preenchimento de Texto)
+            # 1. GRAU
             if 'Grau' in df.columns:
                 grau = to_float(row.get('Grau'))
                 if grau > 0 and int(grau) in DESC_GRAU:
@@ -118,27 +118,23 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Descrição Grau'] = d_curta
                     df.at[i, 'Descrição Penetração'] = d_longa
 
-            # 2. MÉDIAS FÍSICAS (Se existirem as colunas de entrada)
+            # 2. MÉDIAS FÍSICAS
             if 'Diâmetro 1 (mm)' in df.columns:
-                # Diâmetro
                 d_list = [to_float(row.get(f'Diâmetro {x} (mm)')) for x in range(1,6)]
                 diams = [d for d in d_list if d > 0]
                 diam_medio_cm = (sum(diams)/len(diams))/10.0 if diams else 0
                 df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
-                # Comprimento
                 c_list = [to_float(row.get(f'Comprim. {x} (mm)')) for x in range(1,6)]
                 comps = [c for c in c_list if c > 0]
                 comp_medio_cm = (sum(comps)/len(comps))/10.0 if comps else 0
                 df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
 
-                # Massa
                 m_list = [to_float(row.get(f'Massa {x} (g)')) for x in range(1,6)]
                 massas = [m for m in m_list if m > 0]
                 massa_media = sum(massas)/len(massas) if massas else 0
                 df.at[i, 'Massa média (g)'] = round(massa_media, 2)
 
-                # Volume e Densidade
                 dens_kg_m3 = 0
                 if diam_medio_cm > 0 and comp_medio_cm > 0:
                     vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
@@ -173,7 +169,7 @@ def aplicar_formulas_excel(df):
                 ret_total = ret_cr + ret_cu + ret_as
                 df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
 
-                # 4. APROVAÇÃO E REGRAS
+                # 4. APROVAÇÃO
                 aplicacao = str(row.get('Aplicação', '')).strip()
                 ret_esp = 0.0
                 for k, v in REGRAS_RETENCAO.items():
@@ -196,23 +192,28 @@ def carregar_excel_drive(aba_nome):
         df.columns = df.columns.str.strip()
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         
-        # Filtros de Limpeza (mantidos da V52)
+        # Filtros de Limpeza
         if aba_nome == "Madeira Tratada":
             cols_proibidas = ['pH da solução', 'Densidade  solução (g/cm³)', 'Temperatura', 'Concentração pela tabela']
             df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
         elif aba_nome == "Solução Preservativa":
-            cols_proibidas = ['Diâmetro 1 (mm)', 'Massa 1 (g)', 'Retenção', 'Retenção Esp.'] # Simplificado
+            cols_proibidas = ['Diâmetro 1 (mm)', 'Massa 1 (g)', 'Retenção', 'Retenção Esp.']
             df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
-            
+        
+        # --- LIMPEZA DE DATAS (NOVO V55) ---
+        # Converte colunas de data para mostrar apenas DATA (sem hora)
+        cols_data = ["Data de entrada", "Início da análise", "Fim da análise", "Data de Registro"]
+        for col in cols_data:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+
         return df
     except Exception as e: st.error(f"Erro Excel: {e}"); return pd.DataFrame()
 
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
-        # 1. Aplica Matemática
         df_final = aplicar_formulas_excel(df_to_save)
         
-        # 2. Salva Preservando Formatação
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         arquivo_original = io.BytesIO(request.execute())
@@ -248,13 +249,15 @@ def fmt_num(v):
     try: return "{:,.2f}".format(float(str(v).replace(",", "."))).replace(",", "X").replace(".", ",").replace("X", ".")
     except: return str(v)
 def fmt_date(v):
+    # Formata para PDF (DD/MM/AAAA)
     if pd.isna(v) or v is None or str(v).strip() in ["", "NaT", "None"]: return "-"
-    if isinstance(v, datetime): return v.strftime("%d/%m/%Y")
+    if isinstance(v, (datetime, date)): return v.strftime("%d/%m/%Y")
     s = str(v).strip().split(" ")[0]
     for f in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
         try: return datetime.strptime(s, f).strftime("%d/%m/%Y")
         except: continue
     return s
+
 def get_val(d, keys):
     dn = {k.strip().lower(): v for k, v in d.items()}
     for k in keys:
@@ -346,7 +349,6 @@ def main():
     st.title("🌲 Sistema Controle UFV")
     menu=st.sidebar.radio("Menu",["Madeira Tratada","Solução"])
     
-    # --- CONFIGURAÇÃO DE COLUNAS ---
     config = carregar_config()
 
     if menu=="Madeira Tratada":
@@ -357,7 +359,7 @@ def main():
             # --- SELETOR DE COLUNAS ---
             cols_disponiveis = [c for c in df.columns if c not in ["Selecionar", "Código UFV"]]
             
-            # Tenta pegar config salva ou usa o Padrão Limpo
+            # Padrão Focado
             padrao = [c for c in COLS_PADRAO_MADEIRA if c in cols_disponiveis]
             escolha_usuario = config.get("Madeira", padrao)
             
@@ -369,9 +371,8 @@ def main():
                     st.success("Preferência Salva!")
                     st.rerun()
 
-            # Lista final de colunas (Obrigatórias + Escolhidas)
             cols_finais = ["Selecionar", "Código UFV"] + cols_visiveis
-            # Filtra colunas que realmente existem no DF para evitar erro
+            # Filtro de segurança para não quebrar se coluna mudar nome
             cols_finais = [c for c in cols_finais if c in df.columns]
 
             st.markdown("### 🔎 Buscar/Editar Amostra")
@@ -385,7 +386,21 @@ def main():
                 
                 with col_info: st.info(f"Encontrados: {len(df_filtrado)}. Edite e clique em CALCULAR.")
                 
-                df_view = st.data_editor(df_filtrado[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_filtrada")
+                # Editor especial para DATAS sem hora
+                column_config_dates = {
+                    "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
+                    "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
+                    "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
+                    "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
+                }
+
+                df_view = st.data_editor(
+                    df_filtrado[cols_finais], 
+                    num_rows="dynamic", 
+                    use_container_width=True, 
+                    key="tabela_filtrada",
+                    column_config=column_config_dates
+                )
                 
                 if st.session_state['user'] in ["admin", "Lpm"]:
                     if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
@@ -395,7 +410,21 @@ def main():
                         st.rerun()
             else:
                 with col_info: st.info("Mostrando tabela completa.")
-                df_view = st.data_editor(df[cols_finais], num_rows="dynamic", use_container_width=True, key="tabela_completa")
+                
+                column_config_dates = {
+                    "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
+                    "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
+                    "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
+                    "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
+                }
+
+                df_view = st.data_editor(
+                    df[cols_finais], 
+                    num_rows="dynamic", 
+                    use_container_width=True, 
+                    key="tabela_completa",
+                    column_config=column_config_dates
+                )
                 
                 if st.session_state['user'] in ["admin", "Lpm"]:
                     if st.button("🧮 CALCULAR E SALVAR TUDO", type="primary"): 
@@ -403,9 +432,7 @@ def main():
                         salvar_excel_drive(df, "Madeira Tratada")
                         st.rerun()
 
-            # PDF
             if numero_busca:
-                # Recarrega a linha do DF original para pegar colunas ocultas
                 current_df = df[df['Código UFV'].isin(df_filtrado['Código UFV'])]
                 sel_codes = df_view[df_view['Selecionar']==True]['Código UFV'].tolist()
                 sel = current_df[current_df['Código UFV'].isin(sel_codes)]
@@ -444,7 +471,19 @@ def main():
             
             cols_finais = ["Código UFV"] + cols_visiveis
             cols_finais = [c for c in cols_finais if c in df.columns]
-            st.data_editor(df[cols_finais], use_container_width=True)
+            
+            column_config_dates = {
+                    "Data de entrada": st.column_config.DateColumn("Data de entrada", format="DD/MM/YYYY"),
+                    "Início da análise": st.column_config.DateColumn("Início da análise", format="DD/MM/YYYY"),
+                    "Fim da análise": st.column_config.DateColumn("Fim da análise", format="DD/MM/YYYY"),
+                    "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
+            }
+
+            st.data_editor(
+                df[cols_finais], 
+                use_container_width=True,
+                column_config=column_config_dates
+            )
 
 if __name__ == "__main__":
     main()
