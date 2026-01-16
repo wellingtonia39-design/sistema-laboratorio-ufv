@@ -22,11 +22,11 @@ ARQUIVO_CONFIG = "config_colunas_v54.json"
 # --- COLUNAS PADRÃO ---
 COLS_PADRAO_MADEIRA = [
     "Selecionar", "Código UFV", "Data de entrada", "Nome do Cliente", "Aplicação", 
-    "Grau", "Descrição Grau", "Descrição Penetração", # Adicionei Penetração aqui pra vc ver
+    "Grau", "Descrição Grau", "Descrição Penetração",
     "Diâmetro 1 (mm)", "Diâmetro 2 (mm)", 
     "Comprim. 1 (mm)", "Comprim. 2 (mm)",
     "Massa 1 (g)", "Massa 2 (g)",
-    "Volume (cm³)", "Densidade (Kg/m³)", # Para conferência
+    "Volume (cm³)", "Densidade (Kg/m³)",
     "Cromo (%)", "Cobre (%)", "Arsênio (%)",
     "Retenção Total (Kg/m³)", "Observação"
 ]
@@ -52,7 +52,7 @@ DESC_GRAU = {
 TXT_APROVADO = "Os resultados da análise química apresentaram uma retenção do produto de acordo com o padrão mínimo exigido pela norma ABNT NBR 16143"
 TXT_REPROVADO = "Os resultados da análise química apresentaram uma retenção do produto inferior ao padrão mínimo exigido pela norma ABNT NBR 16143"
 
-# --- PERSISTÊNCIA ---
+# --- PERSISTÊNCIA (CORRIGIDO AQUI) ---
 def carregar_config():
     if os.path.exists(ARQUIVO_CONFIG):
         try:
@@ -61,7 +61,9 @@ def carregar_config():
     return {}
 
 def salvar_config(config):
-    try: with open(ARQUIVO_CONFIG, "w") as f: json.dump(config, f)
+    try:
+        with open(ARQUIVO_CONFIG, "w") as f: 
+            json.dump(config, f)
     except: pass
 
 # --- DRIVE ---
@@ -111,7 +113,7 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         st.balloons(); st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅"); st.success(f"Arquivo **{nome_limpo}** salvo em: **{ano_str} > {mes_str}**")
     except Exception as e: st.error(f"Erro ao salvar PDF: {e}")
 
-# --- MATEMÁTICA FORTE (V58) ---
+# --- MATEMÁTICA FORTE ---
 def to_float(v):
     """Converte qualquer coisa para float na marra."""
     try:
@@ -128,7 +130,6 @@ def aplicar_formulas_excel(df):
             codigo = row.get('Código UFV', f'Linha {i}')
             
             # --- 1. CÁLCULO DE GRAU (PRIORIDADE TOTAL) ---
-            # Se tiver qualquer número na coluna Grau, TEM que preencher a descrição
             if 'Grau' in df.columns:
                 raw_grau = row.get('Grau')
                 grau = to_float(raw_grau)
@@ -141,13 +142,11 @@ def aplicar_formulas_excel(df):
             # --- 2. CÁLCULO FÍSICO ---
             dens_kg_m3 = 0.0
             
-            # Só tenta calcular se tiver as colunas de entrada
             if 'Diâmetro 1 (mm)' in df.columns:
                 d_list = [to_float(row.get(f'Diâmetro {x} (mm)')) for x in range(1,6)]
                 diams = [d for d in d_list if d > 0]
                 diam_medio_cm = (sum(diams)/len(diams))/10.0 if len(diams) > 0 else 0
                 
-                # Se calculou, salva na planilha
                 if diam_medio_cm > 0: df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
                 c_list = [to_float(row.get(f'Comprim. {x} (mm)')) for x in range(1,6)]
@@ -184,12 +183,9 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
                     df.at[i, 'Balanço Total'] = 100.00
                 
-                # Se não calculou densidade (pq não tinha massa), tenta ler o que está na planilha
-                # Isso permite que você digite a densidade manualmente se quiser
                 if dens_kg_m3 == 0 and 'Densidade (Kg/m³)' in df.columns:
                     dens_kg_m3 = to_float(row.get('Densidade (Kg/m³)', 0))
 
-                # Se tiver densidade (calculada ou digitada), calcula retenção
                 if dens_kg_m3 > 0:
                     ret_cr = (cr_pct/100)*dens_kg_m3
                     ret_cu = (cu_pct/100)*dens_kg_m3
@@ -202,7 +198,7 @@ def aplicar_formulas_excel(df):
                     ret_total = ret_cr + ret_cu + ret_as
                     df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
 
-                    # 4. APROVAÇÃO (Só se tiver Retenção Total)
+                    # 4. APROVAÇÃO
                     aplicacao = str(row.get('Aplicação', '')).strip()
                     ret_esp = 0.0
                     for k, v in REGRAS_RETENCAO.items():
@@ -248,7 +244,6 @@ def carregar_excel_drive(aba_nome):
 
 def salvar_excel_drive(df_to_save, aba_nome):
     try:
-        # Calcula e Mostra Prévia
         df_final = aplicar_formulas_excel(df_to_save)
         
         st.info("✅ Dados calculados! Salvando no Drive...")
