@@ -19,13 +19,14 @@ ID_ARQUIVO_EXCEL = "1L0qTK6oy2axnCSlLadoyk9q5fExSnA6v"
 ID_PASTA_RAIZ = "1nZtJjVZUVx65GtjnmpTn5Hw_eZOXwpIY"
 ARQUIVO_CONFIG = "config_colunas_v54.json"
 
-# --- DEFINIÇÃO DE COLUNAS PADRÃO ---
+# --- COLUNAS PADRÃO ---
 COLS_PADRAO_MADEIRA = [
     "Selecionar", "Código UFV", "Data de entrada", "Nome do Cliente", "Aplicação", 
-    "Grau", "Descrição Grau", 
+    "Grau", "Descrição Grau", "Descrição Penetração", # Adicionei Penetração aqui pra vc ver
     "Diâmetro 1 (mm)", "Diâmetro 2 (mm)", 
     "Comprim. 1 (mm)", "Comprim. 2 (mm)",
     "Massa 1 (g)", "Massa 2 (g)",
+    "Volume (cm³)", "Densidade (Kg/m³)", # Para conferência
     "Cromo (%)", "Cobre (%)", "Arsênio (%)",
     "Retenção Total (Kg/m³)", "Observação"
 ]
@@ -110,60 +111,66 @@ def salvar_pdf_organizado(pdf_bytes, nome_arquivo, data_entrada_raw):
         st.balloons(); st.toast(f"Salvo: {ano_str}/{mes_str}", icon="✅"); st.success(f"Arquivo **{nome_limpo}** salvo em: **{ano_str} > {mes_str}**")
     except Exception as e: st.error(f"Erro ao salvar PDF: {e}")
 
-# --- MATEMÁTICA ---
+# --- MATEMÁTICA FORTE (V58) ---
 def to_float(v):
-    try: 
-        if pd.isna(v) or str(v).strip() in ["", "None", "nan"]: return 0.0
-        return float(str(v).replace(",", "."))
+    """Converte qualquer coisa para float na marra."""
+    try:
+        if pd.isna(v): return 0.0
+        s_val = str(v).strip().replace(",", ".")
+        if s_val == "": return 0.0
+        return float(s_val)
     except: return 0.0
 
-# 🔥 NOVA FUNÇÃO DE CÁLCULO COM DIAGNÓSTICO DE ERROS 🔥
 def aplicar_formulas_excel(df):
     erros = []
-    # Itera sobre as linhas para calcular
     for i, row in df.iterrows():
         try:
             codigo = row.get('Código UFV', f'Linha {i}')
             
-            # 1. GRAU (Se existir a coluna Grau)
+            # --- 1. CÁLCULO DE GRAU (PRIORIDADE TOTAL) ---
+            # Se tiver qualquer número na coluna Grau, TEM que preencher a descrição
             if 'Grau' in df.columns:
-                grau = to_float(row.get('Grau'))
+                raw_grau = row.get('Grau')
+                grau = to_float(raw_grau)
+                
                 if grau > 0 and int(grau) in DESC_GRAU:
                     d_curta, d_longa = DESC_GRAU[int(grau)]
                     df.at[i, 'Descrição Grau'] = d_curta
                     df.at[i, 'Descrição Penetração'] = d_longa
-
-            # 2. MÉDIAS FÍSICAS (Se existirem colunas de Diâmetro)
+            
+            # --- 2. CÁLCULO FÍSICO ---
+            dens_kg_m3 = 0.0
+            
+            # Só tenta calcular se tiver as colunas de entrada
             if 'Diâmetro 1 (mm)' in df.columns:
-                # Recupera valores (trata erros de nome de coluna se necessário)
                 d_list = [to_float(row.get(f'Diâmetro {x} (mm)')) for x in range(1,6)]
                 diams = [d for d in d_list if d > 0]
                 diam_medio_cm = (sum(diams)/len(diams))/10.0 if len(diams) > 0 else 0
-                df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
+                
+                # Se calculou, salva na planilha
+                if diam_medio_cm > 0: df.at[i, 'Diâmetro médio (cm)'] = round(diam_medio_cm, 2)
 
                 c_list = [to_float(row.get(f'Comprim. {x} (mm)')) for x in range(1,6)]
                 comps = [c for c in c_list if c > 0]
                 comp_medio_cm = (sum(comps)/len(comps))/10.0 if len(comps) > 0 else 0
-                df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
+                if comp_medio_cm > 0: df.at[i, 'Comprim. Médio (cm)'] = round(comp_medio_cm, 2)
 
                 m_list = [to_float(row.get(f'Massa {x} (g)')) for x in range(1,6)]
                 massas = [m for m in m_list if m > 0]
                 massa_media = sum(massas)/len(massas) if len(massas) > 0 else 0
-                df.at[i, 'Massa média (g)'] = round(massa_media, 2)
+                if massa_media > 0: df.at[i, 'Massa média (g)'] = round(massa_media, 2)
 
-                dens_kg_m3 = 0
                 if diam_medio_cm > 0 and comp_medio_cm > 0:
                     vol = 3.14159 * ((diam_medio_cm/2)**2) * comp_medio_cm
                     df.at[i, 'Volume (cm³)'] = round(vol, 2)
+                    
                     if vol > 0 and massa_media > 0:
                         dens_g_cm3 = massa_media / vol
                         dens_kg_m3 = dens_g_cm3 * 1000
                         df.at[i, 'Densidade (g/cm³)'] = round(dens_g_cm3, 3)
                         df.at[i, 'Densidade (Kg/m³)'] = round(dens_kg_m3, 2)
-            else:
-                dens_kg_m3 = 0
 
-            # 3. QUÍMICA
+            # --- 3. QUÍMICA ---
             if 'Cromo (%)' in df.columns:
                 cr_pct = to_float(row.get('Cromo (%)'))
                 cu_pct = to_float(row.get('Cobre (%)'))
@@ -177,39 +184,40 @@ def aplicar_formulas_excel(df):
                     df.at[i, 'Balanço Arsênio %'] = round((as_pct/soma_conc)*100, 2)
                     df.at[i, 'Balanço Total'] = 100.00
                 
-                # Usa densidade calculada ou da planilha
+                # Se não calculou densidade (pq não tinha massa), tenta ler o que está na planilha
+                # Isso permite que você digite a densidade manualmente se quiser
                 if dens_kg_m3 == 0 and 'Densidade (Kg/m³)' in df.columns:
                     dens_kg_m3 = to_float(row.get('Densidade (Kg/m³)', 0))
 
-                ret_cr = (cr_pct/100)*dens_kg_m3
-                ret_cu = (cu_pct/100)*dens_kg_m3
-                ret_as = (as_pct/100)*dens_kg_m3
-                
-                df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
-                df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
-                df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
-                
-                ret_total = ret_cr + ret_cu + ret_as
-                df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
+                # Se tiver densidade (calculada ou digitada), calcula retenção
+                if dens_kg_m3 > 0:
+                    ret_cr = (cr_pct/100)*dens_kg_m3
+                    ret_cu = (cu_pct/100)*dens_kg_m3
+                    ret_as = (as_pct/100)*dens_kg_m3
+                    
+                    df.at[i, 'Retenção Cromo (Kg/m³)'] = round(ret_cr, 2)
+                    df.at[i, 'Retenção Cobre (Kg/m³)'] = round(ret_cu, 2)
+                    df.at[i, 'Retenção Arsênio (Kg/m³)'] = round(ret_as, 2)
+                    
+                    ret_total = ret_cr + ret_cu + ret_as
+                    df.at[i, 'Retenção Total (Kg/m³)'] = round(ret_total, 2)
 
-                # 4. APROVAÇÃO
-                aplicacao = str(row.get('Aplicação', '')).strip()
-                ret_esp = 0.0
-                for k, v in REGRAS_RETENCAO.items():
-                    if k.lower() in aplicacao.lower(): ret_esp = v; break
-                
-                if ret_esp > 0:
-                    df.at[i, 'Retenção'] = ret_esp
-                    df.at[i, 'Retenção Esp.'] = ret_esp
-                    df.at[i, 'Observação'] = TXT_APROVADO if ret_total >= ret_esp else TXT_REPROVADO
+                    # 4. APROVAÇÃO (Só se tiver Retenção Total)
+                    aplicacao = str(row.get('Aplicação', '')).strip()
+                    ret_esp = 0.0
+                    for k, v in REGRAS_RETENCAO.items():
+                        if k.lower() in aplicacao.lower(): ret_esp = v; break
+                    
+                    if ret_esp > 0:
+                        df.at[i, 'Retenção'] = ret_esp
+                        df.at[i, 'Retenção Esp.'] = ret_esp
+                        df.at[i, 'Observação'] = TXT_APROVADO if ret_total >= ret_esp else TXT_REPROVADO
 
         except Exception as e: 
             erros.append(f"Erro em {codigo}: {str(e)}")
             
-    # Se houver erros, MOSTRA NA TELA para debug
     if erros:
-        st.error(f"⚠️ {len(erros)} Erros de cálculo detectados! Verifique se as colunas existem e os dados são números.")
-        with st.expander("Ver detalhes dos erros"):
+        with st.expander("⚠️ Detalhes dos Erros de Cálculo"):
             for erro in erros: st.write(erro)
 
     return df
@@ -220,10 +228,9 @@ def carregar_excel_drive(aba_nome):
         service = get_drive_service()
         request = service.files().get_media(fileId=ID_ARQUIVO_EXCEL)
         df = pd.read_excel(io.BytesIO(request.execute()), sheet_name=aba_nome)
-        df.columns = df.columns.str.strip() # Remove espaços extras dos nomes das colunas
+        df.columns = df.columns.str.strip()
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         
-        # Filtros de Limpeza
         if aba_nome == "Madeira Tratada":
             cols_proibidas = ['pH da solução', 'Densidade  solução (g/cm³)', 'Temperatura', 'Concentração pela tabela']
             df = df.drop(columns=[c for c in cols_proibidas if c in df.columns], errors='ignore')
@@ -244,7 +251,6 @@ def salvar_excel_drive(df_to_save, aba_nome):
         # Calcula e Mostra Prévia
         df_final = aplicar_formulas_excel(df_to_save)
         
-        # DEBUG: Mostra o que vai ser salvo
         st.info("✅ Dados calculados! Salvando no Drive...")
         
         service = get_drive_service()
@@ -442,6 +448,7 @@ def main():
                     if st.button("🧮 CALCULAR E SALVAR (Mesclar)", type="primary"):
                         df.update(df_view)
                         salvar_excel_drive(df, "Madeira Tratada")
+                        st.success("Atualizado!")
                         st.rerun()
             else:
                 with col_info: st.info("Mostrando tabela completa.")
@@ -506,11 +513,7 @@ def main():
                     "Data de Registro": st.column_config.DateColumn("Data de Registro", format="DD/MM/YYYY"),
             }
 
-            st.data_editor(
-                df[cols_finais], 
-                use_container_width=True,
-                column_config=column_config_dates
-            )
+            st.data_editor(df[cols_finais], use_container_width=True, column_config=column_config_dates)
 
 if __name__ == "__main__":
     main()
