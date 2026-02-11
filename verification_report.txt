@@ -1,0 +1,25 @@
+Analyzed 690 rows.
+✅ Volume (cm³): MATCH
+✅ Densidade (Kg/m³): MATCH
+SKIP Soma Concentração (%): Not found in Excel
+SKIP Balanço Total (%): Not found in Excel
+DIFF [Balanço Cromo %] Row 0 | Excel(Balanço Cromo %): 41.8 | Py: 41.9
+DIFF [Balanço Cromo %] Row 1 | Excel(Balanço Cromo %): 39.1 | Py: 39.0
+DIFF [Balanço Cromo %] Row 2 | Excel(Balanço Cromo %): 44.2 | Py: 44.1
+❌ Balanço Cromo %: 157 discrepancies
+DIFF [Balanço Cobre %] Row 0 | Excel(Balanço Cobre %): 21.6 | Py: 21.5
+DIFF [Balanço Cobre %] Row 7 | Excel(Balanço Cobre %): 20.6 | Py: 20.7
+DIFF [Balanço Cobre %] Row 12 | Excel(Balanço Cobre %): 19.8 | Py: 19.9
+❌ Balanço Cobre %: 170 discrepancies
+DIFF [Balanço Arsênio %] Row 3 | Excel(Balanço Arsênio %): 37.3 | Py: 37.2
+DIFF [Balanço Arsênio %] Row 4 | Excel(Balanço Arsênio %): 33.5 | Py: 33.4
+DIFF [Balanço Arsênio %] Row 7 | Excel(Balanço Arsênio %): 41.0 | Py: 40.9
+❌ Balanço Arsênio %: 229 discrepancies
+✅ Retenção Cromo (Kg/m³): MATCH
+✅ Retenção Cobre (Kg/m³): MATCH
+✅ Retenção Arsênio (Kg/m³): MATCH
+✅ Retenção/concentração: MATCH
+DIFF TEXT [Observação] Row 7
+Excel: Os resultados da análise química apresentaram uma retenção do produto de acordo com o padrão mínimo exigido pela norma ABNT NBR 16143
+Py:    Os resultados da análise química apresentaram uma retenção do produto inferior ao padrão mínimo exigido pela norma ABNT NBR 16143
+❌ Observação: 170 discrepancies

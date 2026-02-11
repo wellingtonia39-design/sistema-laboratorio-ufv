@@ -1,0 +1,13 @@
+Analyzed 690 rows.
+Row 0 MISMATCH: Ex=41.8 | Hyp(2.88/6.88)=41.9
+Row 1 MISMATCH: Ex=39.1 | Hyp(2.06/5.28)=39.0
+Row 2 MISMATCH: Ex=44.2 | Hyp(1.77/4.01)=44.1
+
+Hypothesis Accuracy: 458/678 (67.6%)
+
+--- DEBUG ROW 115 ---
+Code: UFV-M-116
+App: Estacas - Solo
+Retenção Target (Ex): 6.5
+Retenção Actual (Ex): 6.86
+Status (Ex): Os resultados da análise química apresentaram uma retenção do produto inferior ao padrão mínimo exigido pela norma ABNT NBR 16143

@@ -1,0 +1,10 @@
+REGRAS_RETENCAO = {
+    "Deck": 4.0,
+    "Dormentes": 9.6,
+    "Estacas - Solo": 6.5,
+    "Estacas - Suspenso": 4.0,
+    "Mourões": 6.5,
+    "Outros - Solo": 6.5,
+    "Outros - Suspenso": 4.0,
+    "Postes": 9.6,
+}

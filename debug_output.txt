@@ -1,0 +1,9 @@
+
+--- DEBUGGING BALANCE & STATUS ---
+
+--- ROW 5 STATUS ERROR ---
+  App: Postes
+  Target (Excel): 9.6
+  Actual (Py): 9.1
+  Status Py: Os resultados da análise química apresentaram uma ...
+  Status Ex: Os resultados da análise química apresentaram uma ...
